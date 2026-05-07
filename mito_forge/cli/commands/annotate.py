@@ -159,8 +159,8 @@ def annotate(ctx, input_file, output_dir, annotation_tool, threads, genetic_code
         with console.status(f"[bold green]{_t('ann_running')}") if not quiet else console:
             task = TaskSpec(
                 task_id="annotate_cli",
-                agent_type="annotate",
-                inputs={"assembly_file": str(input_file), "tool": annotation_tool},
+                agent_type="annotation",
+                inputs={"assembly": str(input_file), "assembly_file": str(input_file), "tool": annotation_tool, "annotator": annotation_tool, "kingdom": "animal"},
                 config={
                     "threads": threads,
                     "genetic_code": genetic_code,

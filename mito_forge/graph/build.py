@@ -5,7 +5,11 @@ LangGraph 图构建
 from typing import Literal
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.sqlite import SqliteSaver
+
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+except ImportError:
+    SqliteSaver = None
 
 from .state import PipelineState, get_next_stage, is_pipeline_complete
 from .nodes import supervisor_node, qc_node, assembly_node, polish_node, annotation_node, report_node

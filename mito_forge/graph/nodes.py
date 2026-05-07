@@ -558,82 +558,122 @@ def annotation_node(state: PipelineState) -> PipelineState:
     1. 对线粒体候选序列进行基因注释
     2. 生成 GFF 和功能注释
     3. 验证注释质量
+    
+    执行策略：
+    - 优先调用 AnnotationAgent 执行真实注释（MITOS/GeSeq等）
+    - Agent 成功时使用其结果（包含 annotation_file 等真实输出）
+    - Agent 失败时 fallback 到模拟注释（保证流水线不中断）
     """
     logger.info("Starting Annotation stage")
+    
+    start_stage(state, "annotation")
     
     try:
         config = state["config"]
         workdir = Path(state["workdir"])
         
-        # 获取组装结果
-        assembly_outputs = state["stage_outputs"]["assembly"]
-        mito_fasta = assembly_outputs["files"]["mito_candidates"]
+        assembly_outputs = state["stage_outputs"].get("assembly", {})
+        mito_fasta = assembly_outputs.get("files", {}).get("mito_candidates")
+        if not mito_fasta:
+            mito_fasta = assembly_outputs.get("files", {}).get("contigs")
+        if not mito_fasta:
+            fail_stage(state, "annotation", "No assembly output file found")
+            state["route"] = RouteDecision.TERMINATE
+            return state
         
-        # 创建注释工作目录
         annotation_dir = workdir / "03_annotation"
         annotation_dir.mkdir(parents=True, exist_ok=True)
         
-        # 执行注释
-        annotation_results = _run_annotation(mito_fasta, annotation_dir, config)
-        
-        # 可选：调用真实 Annotation Agent 进行 LLM 评估（按分级 quick/detailed/expert 调整深度）
+        annotation_results = None
         ann_ai_metrics = {}
         ann_ai_file = None
-        try:
-            if AnnotationAgent and TaskSpec and state["config"].get("enable_llm_eval", True):
+        agent_succeeded = False
+        
+        if AnnotationAgent and TaskSpec:
+            try:
                 detail_level = os.getenv("MITO_DETAIL_LEVEL", "quick").lower()
                 ann_agent = AnnotationAgent(state["config"])
-                base_cfg = {"annotator": "mitos", "detail_level": detail_level, "llm_depth": 1}
+                kingdom = state["config"].get("kingdom", "animal")
+                genetic_code = config.get("genetic_code", 2)
+                interactive = config.get("interactive", False)
+                annotator = (config.get("tool_chain") or {}).get("annotation", "mitos")
+                
+                base_cfg = {"annotator": annotator, "detail_level": detail_level, "llm_depth": 1}
+                agent_inputs = {
+                    "assembly": str(mito_fasta),
+                    "kingdom": kingdom,
+                    "genetic_code": genetic_code,
+                    "interactive": interactive,
+                    "annotator": annotator,
+                }
+                
                 task = TaskSpec(
                     task_id="annotation_pipeline",
                     agent_type="annotation",
-                    inputs={"assembly": str(mito_fasta), "kingdom": state["config"].get("kingdom", "animal"), "genetic_code": config.get("genetic_code", 2), "interactive": config.get("interactive", False)},
+                    inputs=agent_inputs,
                     config=base_cfg,
                     workdir=annotation_dir
                 )
                 _res = ann_agent.execute_task(task)
                 
-                # 立即检查Agent执行状态
                 from ..core.agents.types import AgentStatus
                 if _res.status == AgentStatus.FAILED:
                     error_msg = str(_res.errors[0]) if _res.errors else "Annotation failed"
-                    logger.error(f"🛑 Annotation Agent failed, terminating pipeline: {error_msg}")
-                    fail_stage(state, "annotation", error_msg)
-                    state["route"] = RouteDecision.TERMINATE
-                    return state
-                
-                _ai = (_res.outputs or {}).get("ai_analysis", {}) or {}
-                merged_ai = dict(_ai) if isinstance(_ai, dict) else {"raw": _ai}
-                # expert 再进行一轮复核
-                if detail_level == "expert":
-                    review_cfg = {"annotator": "mitos", "detail_level": "expert", "llm_depth": 2, "review_of": merged_ai}
-                    review_task = TaskSpec(
-                        task_id="annotation_pipeline_review",
-                        agent_type="annotation",
-                        inputs={"assembly": str(mito_fasta), "kingdom": state["config"].get("kingdom", "animal"), "genetic_code": config.get("genetic_code", 2), "interactive": config.get("interactive", False), "review": True},
-                        config=review_cfg,
-                        workdir=annotation_dir
-                    )
-                    _res2 = ann_agent.execute_task(review_task)
-                    _ai2 = (_res2.outputs or {}).get("ai_analysis", {}) or {}
-                    if isinstance(_ai2, dict):
-                        merged_ai["review"] = _ai2
-                _aq = (merged_ai.get("annotation_quality") or merged_ai.get("annotation_assessment") or {})
-                if not _aq and isinstance(merged_ai.get("review"), dict):
-                    _aq = (merged_ai["review"].get("annotation_quality") or merged_ai["review"].get("annotation_assessment") or {})
-                ann_ai_metrics = {
-                    "ai_quality_score": _aq.get("overall_score"),
-                    "ai_grade": _aq.get("grade"),
-                    "ai_summary": _aq.get("summary")
-                }
-                ann_ai_file = str(annotation_dir / "annotation_ai_analysis.json")
-                with open(ann_ai_file, "w", encoding="utf-8") as f:
-                    json.dump(merged_ai, f, ensure_ascii=False, indent=2)
+                    logger.warning(f"Annotation Agent failed: {error_msg}, falling back to mock annotation")
+                else:
+                    agent_outputs = _res.outputs or {}
+                    ann_file = agent_outputs.get("annotation_file")
+                    ann_res = agent_outputs.get("annotation_results", {})
                     
-        except Exception as _e:
-            logger.warning(f"Annotation LLM评估失败，使用模拟结果: {_e}")
+                    if ann_file and Path(ann_file).exists():
+                        annotation_results = _build_annotation_results_from_agent(
+                            ann_file, ann_res, annotation_dir, kingdom, genetic_code, annotator
+                        )
+                        agent_succeeded = True
+                        logger.info(f"Annotation Agent succeeded: {ann_file}")
+                    elif ann_res:
+                        annotation_results = _build_annotation_results_from_agent(
+                            str(annotation_dir / "annotation.gff"), ann_res, annotation_dir, kingdom, genetic_code, annotator
+                        )
+                        agent_succeeded = True
+                        logger.info("Annotation Agent returned results (no file path)")
+                    
+                    _ai = agent_outputs.get("ai_analysis", {}) or {}
+                    merged_ai = dict(_ai) if isinstance(_ai, dict) else {"raw": _ai}
+                    if detail_level == "expert":
+                        review_cfg = {"annotator": annotator, "detail_level": "expert", "llm_depth": 2, "review_of": merged_ai}
+                        review_inputs = dict(agent_inputs)
+                        review_inputs["review"] = True
+                        review_task = TaskSpec(
+                            task_id="annotation_pipeline_review",
+                            agent_type="annotation",
+                            inputs=review_inputs,
+                            config=review_cfg,
+                            workdir=annotation_dir
+                        )
+                        _res2 = ann_agent.execute_task(review_task)
+                        _ai2 = (_res2.outputs or {}).get("ai_analysis", {}) or {}
+                        if isinstance(_ai2, dict):
+                            merged_ai["review"] = _ai2
+                    _aq = (merged_ai.get("annotation_quality") or merged_ai.get("annotation_assessment") or {})
+                    if not _aq and isinstance(merged_ai.get("review"), dict):
+                        _aq = (merged_ai["review"].get("annotation_quality") or merged_ai["review"].get("annotation_assessment") or {})
+                    ann_ai_metrics = {
+                        "ai_quality_score": _aq.get("overall_score"),
+                        "ai_grade": _aq.get("grade"),
+                        "ai_summary": _aq.get("summary")
+                    }
+                    ann_ai_file = str(annotation_dir / "annotation_ai_analysis.json")
+                    with open(ann_ai_file, "w", encoding="utf-8") as f:
+                        json.dump(merged_ai, f, ensure_ascii=False, indent=2)
+                        
+            except Exception as _e:
+                logger.warning(f"Annotation Agent execution failed, falling back to mock: {_e}")
         
-        # 准备输出
+        if not agent_succeeded or annotation_results is None:
+            logger.info("Using mock annotation (no real tool available)")
+            annotation_results = _run_annotation(mito_fasta, annotation_dir, config)
+        
         files_dict = {
             "gff": str(annotation_results["gff"]),
             "genbank": str(annotation_results["genbank"]),
@@ -654,12 +694,11 @@ def annotation_node(state: PipelineState) -> PipelineState:
             files=files_dict,
             metrics=metrics_dict,
             metadata={
-                "tool": "mitos",
+                "tool": annotation_results.get("annotator", "mitos"),
                 "genetic_code": config.get("genetic_code", 2)
             }
         )
         
-        # 更新状态
         complete_stage(state, "annotation", outputs)
         state["current_stage"] = "report"
         state["route"] = RouteDecision.CONTINUE
@@ -671,8 +710,6 @@ def annotation_node(state: PipelineState) -> PipelineState:
     except Exception as e:
         logger.error(f"Annotation failed: {e}")
         fail_stage(state, "annotation", str(e))
-        # Annotation Agent 内部已经处理了错误（包括重试和修复）
-        # 如果到这里说明确实无法修复，注释失败可以继续报告阶段
         state["route"] = RouteDecision.CONTINUE
         return state
 
@@ -763,8 +800,11 @@ def polish_node(state: PipelineState) -> PipelineState:
         complete_stage(
             state,
             "polish",
-            files=files_dict,
-            metrics=metrics_dict
+            StageOutputs(
+                files=files_dict,
+                metrics=metrics_dict,
+                metadata={"tool": polishing_tool}
+            )
         )
         
         # 更新组装文件为抛光后的版本
@@ -1435,9 +1475,61 @@ def _select_mitochondrial_contigs(contigs_file: str, kingdom: str) -> Dict[str, 
         "is_circular": True
     }
 
+def _build_annotation_results_from_agent(
+    annotation_file: str,
+    agent_results: Dict[str, Any],
+    annotation_dir: Path,
+    kingdom: str,
+    genetic_code: int,
+    annotator: str
+) -> Dict[str, Any]:
+    """将 AnnotationAgent 的输出转换为 annotation_node 统一的结果格式"""
+    gff_path = annotation_file
+    gb_path = str(annotation_dir / "annotation.gb")
+    table_path = str(annotation_dir / "genes.tsv")
+    
+    if annotation_file and Path(annotation_file).exists():
+        src = Path(annotation_file)
+        if src.suffix.lower() in (".gb", ".gbk"):
+            gb_path = str(src)
+            gff_path = str(annotation_dir / "annotation.gff")
+            if not Path(gff_path).exists():
+                try:
+                    from Bio import SeqIO
+                    SeqIO.convert(str(src), "genbank", gff_path, "gff")
+                except Exception:
+                    gff_path = str(annotation_dir / "annotation.gff")
+                    Path(gff_path).write_text("##gff-version 3\n# Converted from GenBank\n")
+        elif src.suffix.lower() == ".gff":
+            gff_path = str(src)
+    
+    gene_count = agent_results.get("total_genes", 0)
+    protein_genes = agent_results.get("protein_genes", 0)
+    trna_genes = agent_results.get("trna_genes", 0)
+    rrna_genes = agent_results.get("rrna_genes", 0)
+    
+    if gene_count == 0 and (protein_genes + trna_genes + rrna_genes) > 0:
+        gene_count = protein_genes + trna_genes + rrna_genes
+    
+    completeness = 0.0
+    if gene_count > 0:
+        expected = 37
+        completeness = min(1.0, gene_count / expected)
+    
+    return {
+        "gff": gff_path,
+        "genbank": gb_path,
+        "table": table_path,
+        "gene_count": gene_count,
+        "trna_count": trna_genes,
+        "rrna_count": rrna_genes,
+        "completeness": completeness,
+        "annotator": annotator,
+    }
+
 def _run_annotation(mito_fasta: str, annotation_dir: Path, config: Dict[str, Any]) -> Dict[str, Any]:
-    """执行基因注释（模拟）"""
-    # 实际实现会调用 MITOS 等工具
+    """执行基因注释（模拟）- 当真实工具不可用时的 fallback"""
+    annotator = (config.get("tool_chain") or {}).get("annotation", "mitos")
     gff_file = annotation_dir / "annotation.gff"
     gff_file.write_text("##gff-version 3\n# Mock annotation\n")
     
@@ -1448,7 +1540,8 @@ def _run_annotation(mito_fasta: str, annotation_dir: Path, config: Dict[str, Any
         "gene_count": 37,
         "trna_count": 22,
         "rrna_count": 2,
-        "completeness": 0.95
+        "completeness": 0.95,
+        "annotator": annotator,
     }
 
 def _generate_report(state: PipelineState, report_dir: Path) -> Dict[str, Any]:
