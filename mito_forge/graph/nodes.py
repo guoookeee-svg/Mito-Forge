@@ -334,7 +334,9 @@ def qc_node(state: PipelineState) -> PipelineState:
             metadata={
                 "tool": "fastqc",
                 "version": "0.12.1"
-            }
+            },
+            summary=f"QC completed with score {qc_score}",
+            success=True
         )
         
         # 更新状态
@@ -530,7 +532,9 @@ def assembly_node(state: PipelineState) -> PipelineState:
             metadata={
                 "tool": assembler,
                 "version": assembly_results.get("version", "unknown")
-            }
+            },
+            summary=f"Assembly completed with N50={metrics_dict.get('n50', 'N/A')}",
+            success=True
         )
         
         # 更新状态
@@ -696,7 +700,9 @@ def annotation_node(state: PipelineState) -> PipelineState:
             metadata={
                 "tool": annotation_results.get("annotator", "mitos"),
                 "genetic_code": config.get("genetic_code", 2)
-            }
+            },
+            summary=f"Annotation completed: {annotation_results['gene_count']} genes found",
+            success=True
         )
         
         complete_stage(state, "annotation", outputs)
@@ -803,7 +809,9 @@ def polish_node(state: PipelineState) -> PipelineState:
             StageOutputs(
                 files=files_dict,
                 metrics=metrics_dict,
-                metadata={"tool": polishing_tool}
+                metadata={"tool": polishing_tool},
+                summary=f"Polishing completed with {polishing_tool}",
+                success=True
             )
         )
         

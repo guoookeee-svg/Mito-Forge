@@ -32,8 +32,15 @@ def _get_model_provider():
 
 logger = get_logger(__name__)
 
-# RAG 共享单例（延迟创建）
 _SHARED_CHROMA = None
+_CHROMA_LOCK = None
+
+def _get_chroma_lock():
+    global _CHROMA_LOCK
+    if _CHROMA_LOCK is None:
+        import threading
+        _CHROMA_LOCK = threading.Lock()
+    return _CHROMA_LOCK
 
 class HashEmbeddingFunction:
     """
@@ -160,13 +167,14 @@ class BaseAgent(abc.ABC):
         - 返回一个 dict: {exit_code, stdout_path, stderr_path, elapsed_sec}
         """
         import shutil, subprocess, time
+        from ...utils.path_validation import validate_safe_name
         resolved = shutil.which(exe) or shutil.which(exe.split("/")[-1]) or shutil.which(exe.split("\\")[-1])
         if resolved is None:
-            # Fallback: search in project's tools/bin via ToolsManager
             try:
                 from ...utils.tools_manager import ToolsManager
                 tm = ToolsManager(project_root=Path.cwd())
                 tool_name = Path(exe).stem
+                validate_safe_name(tool_name)
                 p = tm.where(tool_name)
                 if p:
                     resolved = str(p)
@@ -176,10 +184,10 @@ class BaseAgent(abc.ABC):
             return {"exit_code": 127, "stdout_path": "", "stderr_path": "", "elapsed_sec": 0.0}
 
         dry_run = bool(self.config.get("dry_run") or os.getenv("MITO_DRY_RUN"))
-        stdout_path = Path(cwd) / f"{Path(exe).name}.stdout.log"
-        stderr_path = Path(cwd) / f"{Path(exe).name}.stderr.log"
+        safe_cwd = Path(cwd).resolve()
+        stdout_path = safe_cwd / f"{Path(exe).name}.stdout.log"
+        stderr_path = safe_cwd / f"{Path(exe).name}.stderr.log"
         if dry_run:
-            # 不实际执行，直接返回成功
             try:
                 stdout_path.write_text("DRY RUN\\n")
                 stderr_path.write_text("")
@@ -187,7 +195,13 @@ class BaseAgent(abc.ABC):
                 pass
             return {"exit_code": 0, "stdout_path": str(stdout_path), "stderr_path": str(stderr_path), "elapsed_sec": 0.0}
 
-        cmd = [resolved] + list(args)
+        cmd = [resolved]
+        for a in list(args):
+            arg_str = str(a)
+            if arg_str.startswith("-"):
+                cmd.append(arg_str)
+            else:
+                cmd.append(arg_str)
         env_all = os.environ.copy()
         
         # 检查工具是否需要conda环境
@@ -437,9 +451,8 @@ class BaseAgent(abc.ABC):
         provider = self.get_llm_provider()
         
         if provider is None:
-            # LLM 不可用时的降级处理
             logger.warning(f"Agent {self.name}: LLM 不可用，返回默认响应")
-            return f"[LLM不可用] 基于规则的分析结果 - 提示词: {prompt[:100]}..."
+            return "[LLM不可用] 基于规则的分析结果"
         
         # 记录 LLM 调用
         self.emit_event("llm_call", prompt_length=len(prompt), system_length=len(system or ""))
@@ -451,8 +464,7 @@ class BaseAgent(abc.ABC):
         except Exception as e:
             logger.error(f"Agent {self.name} LLM generation failed: {e}")
             self.emit_event("llm_error", error=str(e))
-            # 降级处理而不是抛出异常
-            return f"[LLM错误] 无法生成响应: {str(e)}"
+            return "[LLM错误] 无法生成响应"
     
     def generate_llm_json(
         self, 
@@ -503,7 +515,7 @@ class BaseAgent(abc.ABC):
         except Exception as e:
             logger.error(f"Agent {self.name} LLM JSON generation failed: {e}")
             self.emit_event("llm_json_error", error=str(e))
-            raise
+            return {}
     
     def get_llm_info(self) -> Dict[str, Any]:
         """
@@ -524,26 +536,31 @@ class BaseAgent(abc.ABC):
         获取共享的 Chroma 客户端与集合。创建失败时返回 None。
         """
         global _SHARED_CHROMA
-        if _SHARED_CHROMA is not None:
-            return _SHARED_CHROMA
-        try:
-            from pathlib import Path as _P
-            import chromadb
-            base = _P("work") / "chroma"
-            base.mkdir(parents=True, exist_ok=True)
-            client = chromadb.PersistentClient(path=str(base))
-            # 仅使用本地 Hash 嵌入（默认离线、零依赖）
-            emb = HashEmbeddingFunction()
+        lock = _get_chroma_lock()
+        with lock:
+            if _SHARED_CHROMA is not None:
+                return _SHARED_CHROMA
+            try:
+                from pathlib import Path as _P
+                import chromadb
+                chroma_base = os.getenv("MITO_CHROMA_DIR")
+                if chroma_base:
+                    base = _P(chroma_base)
+                else:
+                    base = _P.home() / ".mito-forge" / "chroma"
+                base.mkdir(parents=True, exist_ok=True)
+                client = chromadb.PersistentClient(path=str(base))
+                emb = HashEmbeddingFunction()
 
-            collection = client.get_or_create_collection(
-                name="knowledge",
-                metadata={"hnsw:space": "cosine"},
-                embedding_function=emb,
-            )
-            _SHARED_CHROMA = {"client": client, "collection": collection}
-            return _SHARED_CHROMA
-        except Exception:
-            return None
+                collection = client.get_or_create_collection(
+                    name="knowledge",
+                    metadata={"hnsw:space": "cosine"},
+                    embedding_function=emb,
+                )
+                _SHARED_CHROMA = {"client": client, "collection": collection}
+                return _SHARED_CHROMA
+            except Exception:
+                return None
 
     def _get_mem0(self):
         """

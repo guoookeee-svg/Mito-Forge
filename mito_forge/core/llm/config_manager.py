@@ -207,20 +207,14 @@ class ModelConfigManager:
         """列出所有配置文件"""
         profiles = []
         for name, config in self.profiles.items():
-            try:
-                provider = self.create_provider(name)
-                available = provider.is_available()
-            except Exception:
-                available = False
-            
+            has_api_key = bool(config.get("api_key") and not config["api_key"].startswith("${"))
             profiles.append({
                 "name": name,
                 "description": config.get("description", ""),
                 "provider_type": config.get("provider_type", ""),
                 "model": config.get("model", ""),
-                "available": available
+                "has_api_key": has_api_key
             })
-        
         return profiles
     
     def add_profile(self, name: str, config: Dict[str, Any]):
@@ -303,17 +297,28 @@ class ModelConfigManager:
         
         logger.info(f"Configuration exported to: {file_path}")
     
+    _ALLOWED_CONFIG_KEYS = {"default_profile", "fallback_profiles", "auto_fallback"}
+    _ALLOWED_PROFILE_KEYS = {
+        "provider_type", "model", "api_key", "api_base",
+        "description", "custom_config", "timeout", "max_retries"
+    }
+
     def import_config(self, file_path: Path):
         """从文件导入配置"""
         with open(file_path, 'r', encoding='utf-8') as f:
             import_data = yaml.safe_load(f)
         
         if "config" in import_data:
-            self.config.update(import_data["config"])
+            filtered_config = {k: v for k, v in import_data["config"].items() if k in self._ALLOWED_CONFIG_KEYS}
+            self.config.update(filtered_config)
             self.save_config()
         
         if "profiles" in import_data:
-            self.profiles.update(import_data["profiles"])
+            for name, profile in import_data["profiles"].items():
+                if not isinstance(profile, dict):
+                    continue
+                filtered_profile = {k: v for k, v in profile.items() if k in self._ALLOWED_PROFILE_KEYS}
+                self.profiles[name] = filtered_profile
             self.save_profiles()
         
         logger.info(f"Configuration imported from: {file_path}")

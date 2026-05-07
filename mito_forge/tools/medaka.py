@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any
 from ..utils.logging import get_logger
+from ..utils.assembly_stats import get_assembly_stats
 
 logger = get_logger(__name__)
 
@@ -81,8 +82,7 @@ def run_medaka(
     final_output = output_dir / "polished.fasta"
     shutil.copy(medaka_output, final_output)
     
-    # 获取统计信息
-    stats = _get_assembly_stats(final_output)
+    stats = get_assembly_stats(final_output)
     
     logger.info(f"Medaka polishing completed with model {model}")
     
@@ -93,39 +93,3 @@ def run_medaka(
         "stats": stats,
         "success": True
     }
-
-
-def _get_assembly_stats(fasta_file: Path) -> Dict[str, Any]:
-    """获取组装统计信息"""
-    try:
-        from Bio import SeqIO
-        
-        sequences = list(SeqIO.parse(str(fasta_file), "fasta"))
-        lengths = [len(seq) for seq in sequences]
-        
-        if not lengths:
-            return {}
-        
-        total_length = sum(lengths)
-        num_contigs = len(lengths)
-        
-        # 计算 N50
-        lengths_sorted = sorted(lengths, reverse=True)
-        cumsum = 0
-        n50 = 0
-        for length in lengths_sorted:
-            cumsum += length
-            if cumsum >= total_length / 2:
-                n50 = length
-                break
-        
-        return {
-            "total_length": total_length,
-            "num_contigs": num_contigs,
-            "n50": n50,
-            "max_contig_length": max(lengths),
-            "min_contig_length": min(lengths)
-        }
-    except Exception as e:
-        logger.warning(f"Failed to get assembly stats: {e}")
-        return {}

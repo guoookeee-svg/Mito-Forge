@@ -16,47 +16,16 @@ from ...utils.exceptions import MitoForgeError
 console = Console()
 
 import os
-def _t(key):
-    lang = os.getenv("MITO_LANG", "zh")
-    texts = {
-        "zh": {
-            "ann_title": "基因注释分析",
-            "input_file": "输入文件",
-            "output_dir": "输出目录",
-            "annotation_tool": "注释工具",
-            "threads": "线程数",
-            "genetic_code": "遗传密码表",
-            "ann_running": "执行基因注释...",
-            "ann_done": "基因注释完成！",
-            "ann_stats": "注释统计",
-            "ann_file": "注释文件",
-            "gb_file": "GenBank文件"
-        },
-        "en": {
-            "ann_title": "Gene Annotation Analysis",
-            "input_file": "Input file",
-            "output_dir": "Output directory",
-            "annotation_tool": "Annotation tool",
-            "threads": "Threads",
-            "genetic_code": "Genetic code",
-            "ann_running": "Running gene annotation...",
-            "ann_done": "Gene annotation completed!",
-            "ann_stats": "Annotation stats",
-            "ann_file": "Annotation file",
-            "gb_file": "GenBank file"
-        }
-    }
-    return texts.get(lang, texts["zh"]).get(key, key)
+from ...utils.i18n import t as _it
 
-from ...utils.i18n import t as _t
+
+def _t(key):
+    return _it(key, os.getenv("MITO_LANG", "zh"))
+
 
 def _help(key):
-    # 健壮回退：解析语言与翻译若失败，直接返回原始键
     try:
-        import sys, os as _os
-        lang = "en" if ("--lang" in sys.argv and "en" in sys.argv) else _os.getenv("MITO_LANG", "zh")
-        from ...utils.i18n import t as _tt
-        return _tt(key, lang)
+        return _it(key, os.getenv("MITO_LANG", "zh"))
     except Exception:
         return key
 
@@ -85,6 +54,12 @@ def annotate(ctx, input_file, output_dir, annotation_tool, threads, genetic_code
         mito-forge annotate contigs.fasta
         mito-forge annotate genome.fasta --annotation-tool mitos --threads 8
     """
+    from ...utils.path_validation import validate_file_path
+    try:
+        validate_file_path(input_file, must_exist=True, allowed_extensions=['.fasta', '.fa', '.fna', '.fas'])
+    except ValueError as e:
+        console.print(f"\n❌ [bold red]{e}[/bold red]")
+        raise SystemExit(1)
     verbose = ctx.obj.get('verbose', False)
     quiet = ctx.obj.get('quiet', False)
     

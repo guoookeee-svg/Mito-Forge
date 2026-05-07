@@ -136,6 +136,15 @@ _TEXTS = {
         "ann.opt.threads": "线程数 (默认: 4)",
         "ann.opt.genetic_code": "遗传密码表 (默认: 2 - 脊椎动物线粒体)",
         "ann.opt.reference_db": "参考数据库 (默认: mitochondria)",
+        "ann_title": "基因注释分析",
+        "ann_running": "执行基因注释...",
+        "ann_done": "基因注释完成！",
+        "ann_stats": "注释统计",
+        "ann_file": "注释文件",
+        "gb_file": "GenBank文件",
+        "annotation_tool": "注释工具",
+        "threads": "线程数",
+        "genetic_code": "遗传密码表",
     },
     "en": {
         # Common
@@ -261,6 +270,15 @@ _TEXTS = {
         "ann.opt.threads": "Threads (default: 4)",
         "ann.opt.genetic_code": "Genetic code (default: 2 - Vertebrate mitochondrial)",
         "ann.opt.reference_db": "Reference database (default: mitochondria)",
+        "ann_title": "Gene Annotation Analysis",
+        "ann_running": "Running gene annotation...",
+        "ann_done": "Gene annotation completed!",
+        "ann_stats": "Annotation stats",
+        "ann_file": "Annotation file",
+        "gb_file": "GenBank file",
+        "annotation_tool": "Annotation tool",
+        "threads": "Threads",
+        "genetic_code": "Genetic code",
     },
 }
 

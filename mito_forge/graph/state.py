@@ -43,7 +43,7 @@ class Kingdom(str, Enum):
 
 # === 类型定义 ===
 
-StageName = Literal["supervisor", "qc", "assembly", "annotation", "report"]
+StageName = Literal["supervisor", "qc", "assembly", "polish", "annotation", "report"]
 
 class InputData(TypedDict):
     """输入数据结构"""
@@ -260,7 +260,6 @@ def fail_stage(state: PipelineState, stage: StageName, error: str, exit_code: Op
     """标记阶段失败"""
     current_time = time.time()
     
-    # 更新阶段信息
     stage_info = state["stage_info"][stage]
     stage_info["status"] = StageStatus.FAILED
     stage_info["end_time"] = current_time
@@ -268,24 +267,20 @@ def fail_stage(state: PipelineState, stage: StageName, error: str, exit_code: Op
     if stage_info["start_time"]:
         stage_info["duration"] = current_time - stage_info["start_time"]
     
-    # 更新失败记录
     if stage not in state["failed_stages"]:
         state["failed_stages"].append(stage)
     
-    # 记录错误和重试计数
     state["errors"].append(f"[{datetime.now().isoformat()}] {stage}: {error}")
-    state["retries"][stage] = state["retries"].get(stage, 0) + 1
     
     return state
 
 def retry_stage(state: PipelineState, stage: StageName) -> PipelineState:
     """重试阶段"""
-    # 重置阶段状态
     stage_info = state["stage_info"][stage]
     stage_info["status"] = StageStatus.RETRYING
     stage_info["retry_count"] += 1
+    state["retries"][stage] = state["retries"].get(stage, 0) + 1
     
-    # 从失败列表中移除（如果存在）
     if stage in state["failed_stages"]:
         state["failed_stages"].remove(stage)
     
@@ -307,13 +302,12 @@ def skip_stage(state: PipelineState, stage: StageName, reason: str) -> PipelineS
 
 def is_pipeline_complete(state: PipelineState) -> bool:
     """检查流水线是否完成"""
-    # 根据配置确定必需的阶段
     required_stages: List[StageName] = ["qc", "assembly"]
     
-    if not state["config"]["skip_annotation"]:
+    if not state["config"].get("skip_annotation", False):
         required_stages.append("annotation")
     
-    if state["config"]["generate_report"]:
+    if state["config"].get("generate_report", True):
         required_stages.append("report")
     
     completed = set(state["completed_stages"])

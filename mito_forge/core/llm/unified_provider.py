@@ -7,6 +7,8 @@ import os
 import json
 import time
 from typing import Dict, Any, Optional, List
+from urllib.parse import urlparse
+import ipaddress
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -15,6 +17,58 @@ from .provider import ModelProvider
 from ...utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+_BLOCKED_NETWORKS = None
+
+def _get_blocked_networks():
+    global _BLOCKED_NETWORKS
+    if _BLOCKED_NETWORKS is not None:
+        return _BLOCKED_NETWORKS
+    nets = []
+    for cidr in [
+        "169.254.0.0/16",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "127.0.0.0/8",
+        "0.0.0.0/8",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    ]:
+        try:
+            nets.append(ipaddress.ip_network(cidr))
+        except Exception:
+            pass
+    _BLOCKED_NETWORKS = nets
+    return nets
+
+
+def _validate_api_base(url: str) -> str:
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError(f"Invalid API base URL: {url}")
+    allow_internal = os.getenv("MITO_ALLOW_INTERNAL_API", "").lower() in ("1", "true", "yes")
+    if allow_internal:
+        return url
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return url
+    try:
+        resolved_ips = __import__('socket').getaddrinfo(hostname, parsed.port)
+        for family, type_, proto, canonname, sockaddr in resolved_ips:
+            ip = ipaddress.ip_address(sockaddr[0])
+            for net in _get_blocked_networks():
+                if ip in net:
+                    raise ValueError(
+                        f"API base URL resolves to internal address {ip} ({net}). "
+                        f"Set MITO_ALLOW_INTERNAL_API=1 to allow."
+                    )
+    except ValueError:
+        raise
+    except Exception:
+        pass
+    return url
 
 class UnifiedProvider(ModelProvider):
     """统一模型提供者，支持多种 API 格式"""
@@ -130,7 +184,8 @@ class UnifiedProvider(ModelProvider):
         self.provider_type = provider_type
         self.model = model or self.config["default_model"]
         self.api_key = api_key or self._get_api_key_from_env()
-        self.api_base = (api_base or self.config["api_base"]).rstrip("/")
+        raw_api_base = (api_base or self.config["api_base"]).rstrip("/")
+        self.api_base = _validate_api_base(raw_api_base)
         self.timeout = timeout
         self.max_retries = max_retries
         

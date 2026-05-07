@@ -13,6 +13,9 @@ except ImportError:
 
 from .state import PipelineState, get_next_stage, is_pipeline_complete
 from .nodes import supervisor_node, qc_node, assembly_node, polish_node, annotation_node, report_node
+from ..utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 def build_pipeline_graph():
     """
@@ -234,53 +237,79 @@ def save_checkpoint(state: PipelineState, checkpoint_path: str):
     """保存检查点"""
     import json
     from pathlib import Path
+    from .state import StageStatus, RouteDecision
     
     checkpoint_file = Path(checkpoint_path)
     checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
     
+    serializable_state = dict(state)
+    
+    if isinstance(serializable_state.get("route"), RouteDecision):
+        serializable_state["route"] = serializable_state["route"].value
+    
+    stage_info = serializable_state.get("stage_info", {})
+    for stage_name, info in stage_info.items():
+        if isinstance(info.get("status"), StageStatus):
+            info["status"] = info["status"].value
+    
     with checkpoint_file.open("w") as f:
-        json.dump(state, f, indent=2, default=str)
+        json.dump(serializable_state, f, indent=2, default=str)
 
 def load_checkpoint(checkpoint_path: str) -> PipelineState:
     """加载检查点"""
     import json
     from pathlib import Path
+    from .state import StageStatus, RouteDecision
     
     checkpoint_file = Path(checkpoint_path)
     if not checkpoint_file.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     
     with checkpoint_file.open("r") as f:
-        return json.load(f)
+        state = json.load(f)
+    
+    route_val = state.get("route", "continue")
+    if isinstance(route_val, str):
+        try:
+            state["route"] = RouteDecision(route_val)
+        except ValueError:
+            state["route"] = RouteDecision.CONTINUE
+    
+    stage_info = state.get("stage_info", {})
+    for stage_name, info in stage_info.items():
+        status_val = info.get("status", "pending")
+        if isinstance(status_val, str):
+            try:
+                info["status"] = StageStatus(status_val)
+            except ValueError:
+                info["status"] = StageStatus.PENDING
+    
+    return state
 
 def resume_pipeline(checkpoint_path: str) -> PipelineState:
     """从检查点恢复流水线"""
+    from .state import init_pipeline_state, RouteDecision
+    
     state = load_checkpoint(checkpoint_path)
+    if state is None:
+        raise ValueError(f"Failed to load checkpoint from {checkpoint_path}")
     
-    # 确定从哪个阶段恢复
-    current_stage = state["current_stage"]
-    print(f"Resuming pipeline from stage: {current_stage}")
+    current_stage = state.get("current_stage", "supervisor")
+    logger.info(f"Resuming pipeline from stage: {current_stage}")
     
-    # 继续执行（这里需要根据当前阶段调整执行逻辑）
-    graph_config = build_pipeline_graph()
-    nodes = graph_config["nodes"]
+    compiled_graph = build_pipeline_graph()
     
-    # 从当前阶段开始执行
-    remaining_stages = []
-    all_stages = ["supervisor", "qc", "assembly", "annotation", "report"]
+    run_config = {
+        "configurable": {
+            "thread_id": state.get("pipeline_id", "resumed")
+        }
+    }
     
-    start_index = all_stages.index(current_stage) if current_stage in all_stages else 0
-    remaining_stages = all_stages[start_index:]
-    
-    for node_name in remaining_stages:
-        if state["done"] or state["route"] == "terminate":
-            break
-            
-        print(f"Executing {node_name}...")
-        node_func = nodes[node_name]
-        state = node_func(state)
-        
-        # 保存中间检查点
-        save_checkpoint(state, checkpoint_path)
-    
-    return state
+    try:
+        final_state = compiled_graph.invoke(state, config=run_config)
+        return final_state
+    except KeyError as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Graph routing error during resume: {e}")
+        raise RuntimeError(f"Pipeline resume failed at stage {current_stage}: {e}")

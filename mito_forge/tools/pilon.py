@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
 from ..utils.logging import get_logger
+from ..utils.assembly_stats import get_assembly_stats
 
 logger = get_logger(__name__)
 
@@ -62,6 +63,7 @@ def run_pilon(
     
     for i in range(1, iterations + 1):
         logger.info(f"Pilon iteration {i}/{iterations}")
+        print(f"[Pilon] Iteration {i}/{iterations}...")
         
         # 1. 建立 BWA 索引
         logger.debug("Building BWA index")
@@ -91,16 +93,18 @@ def run_pilon(
         # 3. 转换为 BAM 并排序
         bam_file = output_dir / f"iter{i}.sorted.bam"
         logger.debug("Converting to sorted BAM")
-        subprocess.run(
-            ["samtools", "view", "-@ ", str(threads), "-bS", str(sam_file)],
+        view_proc = subprocess.Popen(
+            ["samtools", "view", "-@", str(threads), "-bS", str(sam_file)],
             stdout=subprocess.PIPE,
-            check=True
+            stderr=subprocess.PIPE
         )
         subprocess.run(
-            ["samtools", "sort", "-@", str(threads), "-o", str(bam_file), str(sam_file)],
+            ["samtools", "sort", "-@", str(threads), "-o", str(bam_file)],
+            stdin=view_proc.stdout,
             check=True,
             timeout=1800
         )
+        view_proc.wait()
         subprocess.run(
             ["samtools", "index", str(bam_file)],
             check=True
@@ -137,8 +141,7 @@ def run_pilon(
     final_output = output_dir / "polished.fasta"
     shutil.copy(current_assembly, final_output)
     
-    # 获取统计信息
-    stats = _get_assembly_stats(final_output)
+    stats = get_assembly_stats(final_output)
     
     logger.info(f"Pilon polishing completed after {iterations} iterations")
     
@@ -149,39 +152,3 @@ def run_pilon(
         "stats": stats,
         "success": True
     }
-
-
-def _get_assembly_stats(fasta_file: Path) -> Dict[str, Any]:
-    """获取组装统计信息"""
-    try:
-        from Bio import SeqIO
-        
-        sequences = list(SeqIO.parse(str(fasta_file), "fasta"))
-        lengths = [len(seq) for seq in sequences]
-        
-        if not lengths:
-            return {}
-        
-        total_length = sum(lengths)
-        num_contigs = len(lengths)
-        
-        # 计算 N50
-        lengths_sorted = sorted(lengths, reverse=True)
-        cumsum = 0
-        n50 = 0
-        for length in lengths_sorted:
-            cumsum += length
-            if cumsum >= total_length / 2:
-                n50 = length
-                break
-        
-        return {
-            "total_length": total_length,
-            "num_contigs": num_contigs,
-            "n50": n50,
-            "max_contig_length": max(lengths),
-            "min_contig_length": min(lengths)
-        }
-    except Exception as e:
-        logger.warning(f"Failed to get assembly stats: {e}")
-        return {}

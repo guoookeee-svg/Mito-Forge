@@ -2,12 +2,21 @@
 工具独立环境管理器
 为每个生物信息学工具创建和管理独立的conda环境
 """
+import re
+import shlex
 from pathlib import Path
 import subprocess
 import logging
 from typing import Optional, Dict, List
 
 logger = logging.getLogger(__name__)
+
+_SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def _validate_safe_name(name: str, field: str = "name") -> None:
+    if not _SAFE_NAME_RE.match(name):
+        raise ValueError(f"Invalid {field}: {name!r} (only alphanumeric, dash, underscore allowed)")
 
 
 class ToolEnvironmentManager:
@@ -168,23 +177,26 @@ class ToolEnvironmentManager:
         Returns:
             是否成功生成
         """
+        _validate_safe_name(tool_name, "tool_name")
         env_name = self.get_env_name(tool_name)
+        safe_env_name = shlex.quote(env_name)
+        safe_tool_name = shlex.quote(tool_name)
+        safe_exe_path = shlex.quote(exe_path)
         
-        # 生成wrapper脚本内容
         wrapper_content = f'''#!/usr/bin/env bash
-# Auto-generated wrapper for {tool_name}
+# Auto-generated wrapper for {safe_tool_name}
 # Activates conda environment and executes tool
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
-TOOL_PATH="$SCRIPT_DIR/{exe_path}"
+TOOL_PATH="$SCRIPT_DIR/{safe_exe_path}"
 
 # 激活conda环境
 eval "$(conda shell.bash hook)"
-conda activate {env_name} 2>/dev/null || {{
-    echo "Error: Conda environment '{env_name}' not found" >&2
-    echo "Please run: mito-forge tools setup-env {tool_name}" >&2
+conda activate {safe_env_name} 2>/dev/null || {{
+    echo "Error: Conda environment '{safe_env_name}' not found" >&2
+    echo "Please run: mito-forge tools setup-env {safe_tool_name}" >&2
     exit 1
 }}
 
