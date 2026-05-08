@@ -1,0 +1,433 @@
+# Mito-Forge Benchmark & Evaluation Framework
+#
+# 实验方案配置 - 定义数据集、对比工具、评估指标
+# ============================================================
+
+# ----------------------------------------------------------
+# 1. 数据集定义
+# ----------------------------------------------------------
+datasets:
+  # ---- 动物线粒体 (Illumina) ----
+  animal_illumina:
+    - name: "human_mt"
+      sra: "SRR16371558"
+      kingdom: "animal"
+      platform: "illumina"
+      ref_genome: "NC_012920.1"
+      ref_length: 16569
+      description: "Human mitochondrial genome (Homo sapiens)"
+
+    - name: "mouse_mt"
+      sra: "SRR16371559"
+      kingdom: "animal"
+      platform: "illumina"
+      ref_genome: "NC_005089.1"
+      ref_length: 16299
+      description: "Mouse mitochondrial genome (Mus musculus)"
+
+    - name: "zebrafish_mt"
+      sra: "SRR2074216"
+      kingdom: "animal"
+      platform: "illumina"
+      ref_genome: "NC_002333.2"
+      ref_length: 16596
+      description: "Zebrafish mitochondrial genome (Danio rerio)"
+
+    - name: "drosophila_mt"
+      sra: "SRR1584432"
+      kingdom: "animal"
+      platform: "illumina"
+      ref_genome: "NC_024511.2"
+      ref_length: 15267
+      description: "Fruit fly mitochondrial genome (Drosophila melanogaster)"
+
+    - name: "c_elegans_mt"
+      sra: "SRR065390"
+      kingdom: "animal"
+      platform: "illumina"
+      ref_genome: "NC_001328.1"
+      ref_length: 13784
+      description: "C. elegans mitochondrial genome"
+
+  # ---- 动物线粒体 (Nanopore) ----
+  animal_nanopore:
+    - name: "human_mt_ont"
+      sra: "SRR17507498"
+      kingdom: "animal"
+      platform: "ont"
+      ref_genome: "NC_012920.1"
+      ref_length: 16569
+      description: "Human mitochondrial genome (ONT)"
+
+    - name: "pig_mt_ont"
+      sra: "SRR17507499"
+      kingdom: "animal"
+      platform: "ont"
+      ref_genome: "NC_000845.1"
+      ref_length: 16396
+      description: "Pig mitochondrial genome (ONT)"
+
+  # ---- 植物线粒体 (Illumina) ----
+  plant_illumina:
+    - name: "arabidopsis_mt"
+      sra: "SRR12837822"
+      kingdom: "plant"
+      platform: "illumina"
+      ref_genome: "NC_028126.1"
+      ref_length: 366924
+      description: "Arabidopsis thaliana mitochondrial genome"
+
+    - name: "rice_mt"
+      sra: "SRR12837823"
+      kingdom: "plant"
+      platform: "illumina"
+      ref_genome: "NC_011033.1"
+      ref_length: 490520
+      description: "Rice (Oryza sativa) mitochondrial genome"
+
+    - name: "maize_mt"
+      sra: "SRR6287704"
+      kingdom: "plant"
+      platform: "illumina"
+      ref_genome: "NC_007982.1"
+      ref_length: 569630
+      description: "Maize (Zea mays) mitochondrial genome"
+
+    - name: "tobacco_mt"
+      sra: "SRR12837824"
+      kingdom: "plant"
+      platform: "illumina"
+      ref_genome: "NC_006581.1"
+      ref_length: 430597
+      description: "Tobacco (Nicotiana tabacum) mitochondrial genome"
+
+    - name: "cucumber_mt"
+      sra: "SRR12837825"
+      kingdom: "plant"
+      platform: "illumina"
+      ref_genome: "NC_016005.1"
+      ref_length: 1685859
+      description: "Cucumber (Cucumis sativus) mitochondrial genome"
+
+  # ---- 植物 (Nanopore) ----
+  plant_nanopore:
+    - name: "arabidopsis_mt_ont"
+      sra: "SRR17507500"
+      kingdom: "plant"
+      platform: "ont"
+      ref_genome: "NC_028126.1"
+      ref_length: 366924
+      description: "Arabidopsis thaliana mitochondrial genome (ONT)"
+
+# ----------------------------------------------------------
+# 2. 对比工具
+# ----------------------------------------------------------
+comparison_tools:
+  # Mito-Forge 自身
+  mito_forge:
+    command: "mito-forge pipeline"
+    version: "0.2.0"
+    params:
+      default: "--threads 8"
+      with_llm: "--threads 8 --enable-llm-eval"
+      without_llm: "--threads 8 --no-llm"
+
+  # 对比工具 1: MitoZ
+  mitoz:
+    command: "mitoz"
+    version: "3.6"
+    install: "conda install -c bioconda mitoz"
+    params: "--fastq1 {r1} --fastq2 {r2} --output {outdir} --thread 8"
+    notes: "动物线粒体组装+注释一体化工具"
+
+  # 对比工具 2: GetOrganelle
+  getorganelle:
+    command: "get_organelle_config.py"
+    version: "1.7.7"
+    install: "conda install -c bioconda getorganelle"
+    params: "-i {reads} -o {outdir} -t 8 -F animal_mt"
+    notes: "细胞器基因组组装工具，支持动植物"
+
+  # 对比工具 3: NOVOPlasty
+  novoplasty:
+    command: "NOVOPlasty.pl"
+    version: "4.3.4"
+    install: "conda install -c bioconda novoplasty"
+    params: "-c config.txt"
+    notes: "de novo 线粒体基因组组装器"
+
+  # 对比工具 4: MITOS2 (仅注释)
+  mitos2:
+    command: "runmitos.py"
+    version: "2.1.2"
+    install: "conda install -c bioconda mitos"
+    params: "--input {fasta} --code 2 --outdir {outdir}"
+    notes: "动物线粒体注释工具，用于注释质量对比"
+
+  # 对比工具 5: PMGA (独立运行，仅植物注释)
+  pmga_standalone:
+    command: "pmga"
+    version: "latest"
+    install: "singularity pull pmga.sif figshare://27201798"
+    params: "-i {fasta} -o {outdir} -t 8"
+    notes: "植物线粒体注释工具，用于植物注释质量对比"
+
+# ----------------------------------------------------------
+# 3. 评估指标
+# ----------------------------------------------------------
+metrics:
+  assembly:
+    - name: "n50"
+      description: "组装 N50 值"
+      unit: "bp"
+      higher_is_better: true
+
+    - name: "total_length"
+      description: "组装总长度"
+      unit: "bp"
+      higher_is_better: null
+
+    - name: "num_contigs"
+      description: "Contig 数量"
+      unit: "count"
+      higher_is_better: false
+
+    - name: "coverage_vs_ref"
+      description: "与参考基因组比对覆盖率"
+      unit: "%"
+      higher_is_better: true
+
+    - name: "identity_vs_ref"
+      description: "与参考基因组比对一致性"
+      unit: "%"
+      higher_is_better: true
+
+    - name: "completeness"
+      description: "线粒体基因组完整性（基于核心基因集）"
+      unit: "%"
+      higher_is_better: true
+
+    - name: "assembly_time"
+      description: "组装耗时"
+      unit: "seconds"
+      higher_is_better: false
+
+  annotation:
+    - name: "total_genes"
+      description: "注释到的基因总数"
+      unit: "count"
+      higher_is_better: null
+
+    - name: "protein_genes"
+      description: "蛋白编码基因数"
+      unit: "count"
+      higher_is_better: null
+
+    - name: "trna_genes"
+      description: "tRNA 基因数"
+      unit: "count"
+      higher_is_better: null
+
+    - name: "rrna_genes"
+      description: "rRNA 基因数"
+      unit: "count"
+      higher_is_better: null
+
+    - name: "gene_precision"
+      description: "注释基因精确率（与参考注释比对）"
+      unit: "%"
+      higher_is_better: true
+
+    - name: "gene_recall"
+      description: "注释基因召回率"
+      unit: "%"
+      higher_is_better: true
+
+    - name: "gene_f1"
+      description: "注释基因 F1 分数"
+      unit: "%"
+      higher_is_better: true
+
+    - name: "boundary_accuracy"
+      description: "基因边界准确性（±10bp 内）"
+      unit: "%"
+      higher_is_better: true
+
+    - name: "annotation_time"
+      description: "注释耗时"
+      unit: "seconds"
+      higher_is_better: false
+
+  pipeline:
+    - name: "total_time"
+      description: "端到端总耗时"
+      unit: "seconds"
+      higher_is_better: false
+
+    - name: "auto_recovery_rate"
+      description: "Agent 自动恢复成功率"
+      unit: "%"
+      higher_is_better: true
+
+    - name: "manual_interventions"
+      description: "需要人工干预的次数"
+      unit: "count"
+      higher_is_better: false
+
+    - name: "success_rate"
+      description: "流水线成功率"
+      unit: "%"
+      higher_is_better: true
+
+  llm_decision:
+    - name: "diagnosis_accuracy"
+      description: "AI 错误诊断准确率"
+      unit: "%"
+      higher_is_better: true
+
+    - name: "fix_success_rate"
+      description: "AI 建议修复成功率"
+      unit: "%"
+      higher_is_better: true
+
+    - name: "suggestion_relevance"
+      description: "AI 建议相关性评分（1-5）"
+      unit: "score"
+      higher_is_better: true
+
+    - name: "rag_citation_quality"
+      description: "RAG 引用质量评分（1-5）"
+      unit: "score"
+      higher_is_better: true
+
+# ----------------------------------------------------------
+# 4. 实验设计
+# ----------------------------------------------------------
+experiments:
+  # 实验 1: 端到端流水线评估
+  exp1_end_to_end:
+    title: "End-to-End Pipeline Evaluation"
+    description: "评估 Mito-Forge 在不同数据集上的端到端性能"
+    datasets: ["animal_illumina", "animal_nanopore", "plant_illumina", "plant_nanopore"]
+    tools: ["mito_forge"]
+    metrics: ["assembly", "annotation", "pipeline"]
+    repetitions: 3
+
+  # 实验 2: 与现有工具对比（组装）
+  exp2_assembly_comparison:
+    title: "Assembly Quality Comparison"
+    description: "与 MitoZ/GetOrganelle/NOVOPlasty 的组装质量对比"
+    datasets: ["animal_illumina"]
+    tools: ["mito_forge", "mitoz", "getorganelle", "novoplasty"]
+    metrics: ["assembly"]
+    repetitions: 3
+
+  # 实验 3: 注释质量对比
+  exp3_annotation_comparison:
+    title: "Annotation Quality Comparison"
+    description: "与 MITOS2/PMGA 的注释质量对比"
+    datasets: ["animal_illumina", "plant_illumina"]
+    tools: ["mito_forge", "mitos2", "pmga_standalone"]
+    metrics: ["annotation"]
+    repetitions: 3
+
+  # 实验 4: LLM 决策质量评估
+  exp4_llm_decision:
+    title: "LLM Decision Quality Evaluation"
+    description: "评估 AI 诊断、修复建议和 RAG 增强的效果"
+    datasets: ["animal_illumina", "plant_illumina"]
+    tools: ["mito_forge"]
+    metrics: ["llm_decision"]
+    repetitions: 5
+
+  # 实验 5: 消融实验
+  exp5_ablation:
+    title: "Ablation Study"
+    description: "逐步移除 RAG/Mem0/AutoRecovery/LLM，评估各组件贡献"
+    datasets: ["animal_illumina", "plant_illumina"]
+    tools: ["mito_forge"]
+    variants:
+      - name: "full"
+        description: "完整系统"
+        config: {}
+
+      - name: "no_rag"
+        description: "移除 RAG"
+        config: {"disable_rag": true}
+
+      - name: "no_mem0"
+        description: "移除 Mem0"
+        config: {"disable_mem0": true}
+
+      - name: "no_auto_recovery"
+        description: "移除自动恢复"
+        config: {"disable_auto_recovery": true}
+
+      - name: "no_llm"
+        description: "移除 LLM（纯规则）"
+        config: {"disable_llm": true}
+
+      - name: "no_rag_no_mem0"
+        description: "移除 RAG + Mem0"
+        config: {"disable_rag": true, "disable_mem0": true}
+
+    metrics: ["pipeline", "llm_decision"]
+    repetitions: 3
+
+  # 实验 6: 植物注释工具链 fallback 评估
+  exp6_plant_fallback:
+    title: "Plant Annotation Fallback Chain Evaluation"
+    description: "评估 PMGA→MITOFY→BLAST+→Basic fallback 链各层级的效果"
+    datasets: ["plant_illumina"]
+    tools: ["mito_forge"]
+    variants:
+      - name: "pmga_only"
+        description: "仅使用 PMGA"
+        config: {"annotation_tool": "pmga"}
+
+      - name: "mitofy_only"
+        description: "仅使用 MITOFY"
+        config: {"annotation_tool": "mitofy"}
+
+      - name: "blast_only"
+        description: "仅使用 BLAST+"
+        config: {"annotation_tool": "blast"}
+
+      - name: "basic_only"
+        description: "仅使用 Basic 注释"
+        config: {"annotation_tool": "basic"}
+
+      - name: "auto_fallback"
+        description: "自动 fallback 链"
+        config: {"annotation_tool": "auto"}
+
+    metrics: ["annotation"]
+    repetitions: 3
+
+  # 实验 7: 自动恢复能力评估
+  exp7_auto_recovery:
+    title: "Auto-Recovery Capability Evaluation"
+    description: "故意制造错误场景，测试 Agent 自动恢复能力"
+    scenarios:
+      - name: "tool_missing"
+        description: "工具未安装"
+        inject: "hide_tool=spades"
+
+      - name: "oom"
+        description: "内存不足"
+        inject: "limit_memory=4g"
+
+      - name: "timeout"
+        description: "执行超时"
+        inject: "timeout=60"
+
+      - name: "bad_params"
+        description: "错误参数"
+        inject: "wrong_kmer=true"
+
+      - name: "low_quality_data"
+        description: "低质量数据"
+        inject: "subsample=0.1"
+
+    metrics: ["pipeline", "llm_decision"]
+    repetitions: 5
