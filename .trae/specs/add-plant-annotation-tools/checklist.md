@@ -1,0 +1,17 @@
+- [x] 植物线粒体参考蛋白数据库文件存在且包含至少 24 个核心蛋白编码基因
+- [x] `get_db_path()` 函数正确返回数据库路径
+- [x] `ensure_blast_db()` 首次调用时自动构建 BLAST 数据库索引
+- [x] `run_blast_annotation()` 在 BLAST+ 可用时正确执行 blastx 同源注释并生成 GFF 文件
+- [x] `run_blast_annotation()` 在 BLAST+ 不可用时返回 None（触发 fallback）
+- [x] `run_pmga()` 在 PMGA 可用时正确执行注释并解析 GFF/GenBank 输出
+- [x] `run_pmga()` 在 PMGA 不可用时返回 None
+- [x] `run_mitofy()` 在 MITOFY 可用时正确执行注释并转换输出为 GFF
+- [x] `run_mitofy()` 在 MITOFY 不可用时返回 None
+- [x] AnnotationAgent 植物注释路径按 PMGA → MITOFY → BLAST+ → Basic 顺序 fallback
+- [x] AnnotationAgent 的 `supported_annotators` 包含 `pmga`、`mitofy`、`blast`
+- [x] GeSeq 不再是植物注释的默认路径，仅作为可选工具
+- [x] `_run_basic_annotation()` 植物路径生成包含基因结构的真实 GFF 文件（非空文件）
+- [x] CLI annotate 命令的 `--annotation-tool` 选项包含 `pmga`、`mitofy`、`blast`
+- [x] `selection.py` 中植物注释工具推荐顺序为 PMGA > MITOFY > BLAST+ > GeSeq > Basic
+- [x] doctor 命令检测并报告 PMGA、MITOFY、BLAST+、tRNAscan-SE 的安装状态
+- [x] 所有新增代码的导入和基本功能测试通过

@@ -34,7 +34,7 @@ def _help(key):
 @click.option('-o', '--output-dir', default='./annotation_results',
               help=_help('ann.opt.output_dir'))
 @click.option('-t', '--annotation-tool',
-              type=click.Choice(['mitos', 'geseq', 'prokka']),
+              type=click.Choice(['mitos', 'pmga', 'mitofy', 'blast', 'geseq', 'prokka']),
               default='mitos',
               help=_help('ann.opt.annotation_tool'))
 @click.option('-j', '--threads', default=4, type=int,

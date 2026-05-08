@@ -24,6 +24,17 @@ DEFAULT_TOOLS = [
     "quast"
 ]
 
+PLANT_ANNOTATION_TOOLS = [
+    "pmga", "mitofy", "blastx", "tRNAscan-SE",
+]
+
+TOOL_ALIASES = {
+    "pmga": ["pmga", "PMGA"],
+    "mitofy": ["mitofy.pl", "mitofy"],
+    "blastx": ["blastx"],
+    "tRNAscan-SE": ["tRNAscan-SE", "tRNAscan"],
+}
+
 
 def suggest_installation(name: str) -> str:
     # 提供跨平台的通用安装建议（不执行）
@@ -53,6 +64,11 @@ def suggest_installation(name: str) -> str:
         "hmmer": "Install HMMER via bioconda: conda install -c bioconda hmmer",
         # Quality assessment
         "quast": "Install QUAST via bioconda: conda install -c bioconda quast",
+        # Plant mitochondrial annotation tools
+        "pmga": "Install via singularity from https://figshare.com/articles/software/Source_code_of_PMGA/27201798 or web server at http://www.1kmpg.cn/pmga/",
+        "mitofy": "Download from http://dogma.ccbb.utexas.edu/mitofy.tgz",
+        "blastx": "Install via conda: conda install -c bioconda blast",
+        "tRNAscan-SE": "Install via conda: conda install -c bioconda trnascan-se",
     }
     return suggestions.get(name, f"Search installation guide for {name} (bioconda recommended).")
 
@@ -68,23 +84,32 @@ def check_tools(tools: List[str] | None = None, project_root: Path | None = None
         project_root = Path.cwd()
     
     for t in tools:
-        # 先检查系统 PATH
-        path = shutil.which(t)
+        aliases = TOOL_ALIASES.get(t, [t])
+        path = None
+        found_alias = None
+        for alias in aliases:
+            p = shutil.which(alias)
+            if p:
+                path = p
+                found_alias = alias
+                break
         
-        # 如果系统 PATH 没找到，检查项目本地工具目录
         if not path:
             from .tools_manager import ToolsManager
             try:
                 tm = ToolsManager(project_root=project_root)
-                local_path = tm.where(t)
-                if local_path and Path(local_path).exists():
-                    path = local_path
+                for alias in aliases:
+                    local_path = tm.where(alias)
+                    if local_path and Path(local_path).exists():
+                        path = local_path
+                        found_alias = alias
+                        break
             except Exception:
                 pass
         
         if path:
             present.append(t)
-            detail[t] = {"found": True, "path": path}
+            detail[t] = {"found": True, "path": path, "alias": found_alias}
         else:
             missing.append(t)
             detail[t] = {"found": False, "suggest": suggest_installation(t)}

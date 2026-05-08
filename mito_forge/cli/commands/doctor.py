@@ -1,7 +1,7 @@
 import click
 import os
 from pathlib import Path
-from ...utils.toolcheck import check_tools, DEFAULT_TOOLS
+from ...utils.toolcheck import check_tools, DEFAULT_TOOLS, PLANT_ANNOTATION_TOOLS
 
 def run_checks(base_dir: Path | None = None) -> dict:
     """
@@ -133,6 +133,11 @@ def interactive_install(missing_tools: list, detail: dict):
         "getorganelle": {"priority": "可选", "reason": "细胞器基因组组装"},
         "novoplasty": {"priority": "可选", "reason": "de novo组装"},
         "blast": {"priority": "可选", "reason": "序列比对"},
+        # Plant mitochondrial annotation tools
+        "pmga": {"priority": "可选", "reason": "植物线粒体基因组注释"},
+        "mitofy": {"priority": "可选", "reason": "植物线粒体基因识别"},
+        "blastx": {"priority": "可选", "reason": "BLAST+蛋白比对"},
+        "tRNAscan-SE": {"priority": "可选", "reason": "tRNA基因预测"},
     }
     
     # 按优先级分组
@@ -376,6 +381,34 @@ def doctor(tools: str, fix: bool, interactive: bool):
         click.echo("Missing/缺失: None")
 
     click.echo(f"Summary: total={result['summary']['total']}, present={result['summary']['present']}, missing={result['summary']['missing']}")
+    
+    click.echo("\n" + "="*60)
+    click.echo("Plant Mitochondrial Annotation Tools / 植物线粒体注释工具")
+    click.echo("="*60)
+    
+    plant_result = check_tools(PLANT_ANNOTATION_TOOLS, project_root=project_root)
+    plant_present = plant_result["present"]
+    plant_missing = plant_result["missing"]
+    
+    for t in PLANT_ANNOTATION_TOOLS:
+        d = plant_result["detail"].get(t, {})
+        if d.get("found"):
+            alias_info = f" (via {d['alias']})" if d.get("alias") and d["alias"] != t else ""
+            click.echo(f"  ✅ {t}: OK{alias_info}")
+        else:
+            click.echo(f"  ❌ {t}: MISSING")
+            click.echo(f"     → {d.get('suggest', 'see bioconda')}")
+    
+    click.echo(f"\n  Plant Tools Summary: present={len(plant_present)}, missing={len(plant_missing)}")
+    
+    if plant_missing and not (fix or interactive):
+        click.echo("\n  💡 提示: 使用 'doctor --interactive' 或 '--fix' 来安装缺失工具")
+    
+    if plant_missing and (fix or interactive):
+        click.echo("\n  缺失的植物注释工具安装建议:")
+        for m in plant_missing:
+            d = plant_result["detail"].get(m, {})
+            click.echo(f"  - {m}: {d.get('suggest', 'see bioconda')}")
     
     # 检查已安装工具的依赖环境
     if present:

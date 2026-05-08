@@ -45,6 +45,13 @@ def select_tool_plan(seq_type: str, kingdom: str = None, input_types: List[str] 
     kg = (kingdom or "").lower() if kingdom else None
     itypes = [s.upper() for s in (input_types or [])]
 
+    if kg == "plant":
+        annotator_candidates = ["PMGA", "MITOFY", "BLAST+", "GeSeq", "Basic"]
+        default_annotator = "pmga"
+    else:
+        annotator_candidates = ["MITOS", "Prokka", "Basic"]
+        default_annotator = "mitos"
+
     if st == "illumina":
         plan = {
             "qc": ["fastp", "fastqc"],
@@ -67,6 +74,8 @@ def select_tool_plan(seq_type: str, kingdom: str = None, input_types: List[str] 
             "mappers": ["minimap2"] if "FASTA" in itypes else [],
             "baiting_tools": (["MITObim", "ARC"] if "BAM" in itypes else []),
         }
+        plan["annotator"] = default_annotator
+        plan["candidates"]["annotator"] = annotator_candidates
         plan["hints"] = {"kingdom": kingdom, "input_types": itypes}
         return plan
 
@@ -82,6 +91,8 @@ def select_tool_plan(seq_type: str, kingdom: str = None, input_types: List[str] 
             "polishers": ["Racon", "Medaka"],
         }
         plan["extras"] = {"mappers": ["minimap2"], "baiting_tools": []}
+        plan["annotator"] = default_annotator
+        plan["candidates"]["annotator"] = annotator_candidates
         plan["hints"] = {"kingdom": kingdom, "input_types": itypes}
         return plan
 
@@ -97,6 +108,8 @@ def select_tool_plan(seq_type: str, kingdom: str = None, input_types: List[str] 
             "polishers": [],
         }
         plan["extras"] = {"mappers": ["minimap2"], "baiting_tools": []}
+        plan["annotator"] = default_annotator
+        plan["candidates"]["annotator"] = annotator_candidates
         plan["hints"] = {"kingdom": kingdom, "input_types": itypes}
         return plan
 
@@ -112,6 +125,8 @@ def select_tool_plan(seq_type: str, kingdom: str = None, input_types: List[str] 
             "polishers": ["Racon", "Racon"],
         }
         plan["extras"] = {"mappers": ["minimap2"], "baiting_tools": []}
+        plan["annotator"] = default_annotator
+        plan["candidates"]["annotator"] = annotator_candidates
         plan["hints"] = {"kingdom": kingdom, "input_types": itypes}
         return plan
 
@@ -127,6 +142,8 @@ def select_tool_plan(seq_type: str, kingdom: str = None, input_types: List[str] 
             "polishers": ["Racon", "Pilon"],
         }
         plan["extras"] = {"mappers": ["minimap2"], "baiting_tools": []}
+        plan["annotator"] = default_annotator
+        plan["candidates"]["annotator"] = annotator_candidates
         plan["hints"] = {"kingdom": kingdom, "input_types": itypes}
         return plan
 
@@ -137,6 +154,8 @@ def select_tool_plan(seq_type: str, kingdom: str = None, input_types: List[str] 
     }
     plan["candidates"] = {"assembler": ["SPAdes"], "qc": ["fastp"], "polishers": []}
     plan["extras"] = {"mappers": [], "baiting_tools": (["MITObim", "ARC"] if "BAM" in itypes else [])}
+    plan["annotator"] = default_annotator
+    plan["candidates"]["annotator"] = annotator_candidates
     plan["hints"] = {"kingdom": kingdom, "input_types": itypes}
     return plan
 
