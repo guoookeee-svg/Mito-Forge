@@ -1,0 +1,355 @@
+- id: "spades_oom"
+  category: "assembly"
+  tool: "spades"
+  error_pattern: "out of memory|OOM|Cannot allocate|bad_alloc|std::bad_alloc"
+  symptoms:
+    - "SPAdes assembly crashes with memory error"
+    - "Error message contains 'bad_alloc' or 'out of memory'"
+    - "Process killed by OOM killer (exit code 137)"
+  root_cause: "SPAdes default memory configuration is insufficient for the current dataset size"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Reduce thread count to lower peak memory"
+      params:
+        threads: "max(1, current_threads // 2)"
+    - action: "Enable --careful mode to reduce memory usage"
+      params:
+        careful: true
+    - action: "Reduce K-mer range"
+      params:
+        k: "21,33,55"
+    - action: "If still OOM, switch to Flye for long-read assembly"
+      alternative_tool: "flye"
+  confidence: 0.95
+  references:
+    - "SPAdes manual section 3.1"
+
+- id: "spades_low_coverage"
+  category: "assembly"
+  tool: "spades"
+  error_pattern: "low coverage|coverage is too low|insufficient coverage"
+  symptoms:
+    - "SPAdes reports low coverage warning"
+    - "Assembly produces very short contigs or no contigs"
+    - "N50 is much lower than expected genome size"
+  root_cause: "Input read coverage is insufficient for de novo assembly"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Disable error correction (--disable-corr)"
+      params:
+        disable_corr: true
+    - action: "Use smaller K-mer sizes"
+      params:
+        k: "21,33,55"
+    - action: "Switch to GetOrganelle which uses baiting approach"
+      alternative_tool: "getorganelle"
+  confidence: 0.85
+
+- id: "flye_repeat_resolution"
+  category: "assembly"
+  tool: "flye"
+  error_pattern: "repeat resolution failed|unresolved repeats|disconnected components"
+  symptoms:
+    - "Flye output contains many unresolved repeats"
+    - "Assembly graph has multiple disconnected components"
+    - "Assembly is fragmented despite high coverage"
+  root_cause: "ONT data coverage is insufficient to resolve repeat regions"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Increase minimum overlap length"
+      params:
+        min_overlap: 5000
+    - action: "If coverage < 30x, consider increasing sequencing depth"
+      params: {}
+    - action: "Use Racon + Medaka for multiple polishing rounds"
+      params:
+        polish_rounds: 3
+  confidence: 0.85
+
+- id: "flye_assembly_too_short"
+  category: "assembly"
+  tool: "flye"
+  error_pattern: "assembly too short|total length.*smaller than expected"
+  symptoms:
+    - "Flye assembly length is much shorter than expected mitochondrial genome"
+    - "Only a fraction of expected genome is assembled"
+  root_cause: "Input data may contain mostly non-mitochondrial reads, or parameters are too stringent"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Reduce minimum overlap length"
+      params:
+        min_overlap: 1000
+    - action: "Try with different genome size estimate"
+      params:
+        genome_size: "expected_size * 1.5"
+    - action: "Pre-filter reads with minimap2 mapping to reference"
+      params: {}
+  confidence: 0.80
+
+- id: "pilon_java_heap"
+  category: "polish"
+  tool: "pilon"
+  error_pattern: "java.*OutOfMemoryError|Java heap space|Could not reserve enough space"
+  symptoms:
+    - "Pilon crashes with Java heap space error"
+    - "Pilon uses excessive memory during polishing"
+  root_cause: "Java heap size is insufficient for the input BAM file size"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Increase Java heap size with -Xmx flag"
+      params:
+        java_heap: "32G"
+    - action: "Split BAM file by region and polish separately"
+      params: {}
+    - action: "Use Racon instead for memory-efficient polishing"
+      alternative_tool: "racon"
+  confidence: 0.90
+
+- id: "racon_no_alignments"
+  category: "polish"
+  tool: "racon"
+  error_pattern: "no alignments|empty alignment file|zero overlaps"
+  symptoms:
+    - "Racon produces no output"
+    - "Racon reports zero overlaps processed"
+  root_cause: "Minimap2 alignment produced no overlaps, possibly due to incompatible read-assembly pairing"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Check minimap2 preset (-x map-ont vs -x map-pb)"
+      params:
+        minimap2_preset: "map-ont"
+    - action: "Lower minimap2 secondary alignment threshold"
+      params:
+        secondary_ratio: 0.5
+    - action: "Verify input files are not empty or corrupted"
+      params: {}
+  confidence: 0.85
+
+- id: "medaka_model_not_found"
+  category: "polish"
+  tool: "medaka"
+  error_pattern: "model.*not found|no.*model|unknown model"
+  symptoms:
+    - "Medaka reports unknown model name"
+    - "Medaka fails to load specified model"
+  root_cause: "Specified Medaka model is not available in the installed version"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Use 'medaka --list_models' to see available models"
+      params: {}
+    - action: "Switch to r941_min_high_g303 model (most common)"
+      params:
+        model: "r941_min_high_g303"
+    - action: "Update medaka to latest version for more models"
+      params: {}
+  confidence: 0.90
+
+- id: "plant_annotation_low_gene_count"
+  category: "annotation"
+  tool: "pmga"
+  error_pattern: "low gene count|few genes detected|incomplete annotation"
+  symptoms:
+    - "PMGA annotates far fewer genes than expected (< 20 protein-coding genes)"
+    - "Plant mitochondrial genome annotation completeness < 60%"
+  root_cause: "Input sequence may not be a complete mitochondrial genome, or species not in PMGA reference database"
+  fix_strategy: "switch_tool"
+  suggestions:
+    - action: "Try MITOFY (BLAST-based homology search, broader coverage)"
+      alternative_tool: "mitofy"
+    - action: "Try BLAST+ homology annotation (most universal but lowest precision)"
+      alternative_tool: "blast"
+    - action: "Check assembly completeness (N50 vs expected genome size)"
+      params: {}
+  confidence: 0.80
+
+- id: "pmga_singularity_not_found"
+  category: "annotation"
+  tool: "pmga"
+  error_pattern: "singularity.*not found|singularity.*command not found"
+  symptoms:
+    - "PMGA fails because Singularity is not installed"
+    - "Cannot run PMGA container"
+  root_cause: "PMGA requires Singularity to run its container, but Singularity is not available"
+  fix_strategy: "switch_tool"
+  suggestions:
+    - action: "Install Singularity/Apptainer"
+      params: {}
+    - action: "Try MITOFY which does not require containers"
+      alternative_tool: "mitofy"
+    - action: "Try BLAST+ homology annotation as fallback"
+      alternative_tool: "blast"
+  confidence: 0.90
+
+- id: "mitofy_blast_db_not_found"
+  category: "annotation"
+  tool: "mitofy"
+  error_pattern: "blast.*database.*not found|BLASTDB.*error|cannot find.*blast db"
+  symptoms:
+    - "MITOFY fails because BLAST database is missing"
+    - "BLAST+ cannot locate reference protein database"
+  root_cause: "Required BLAST protein database is not built or not in expected path"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Build BLAST database using makeblastdb"
+      params: {}
+    - action: "Set BLASTDB environment variable to database directory"
+      params:
+        BLASTDB: "/path/to/blast/db"
+    - action: "Try BLAST+ annotation with custom database"
+      alternative_tool: "blast"
+  confidence: 0.85
+
+- id: "blast_no_hits"
+  category: "annotation"
+  tool: "blast"
+  error_pattern: "no hits found|zero hits|no significant similarity"
+  symptoms:
+    - "BLAST+ search returns no hits"
+    - "No homologous genes detected in the assembly"
+  root_cause: "Assembly may contain non-mitochondrial sequences, or reference database lacks related species"
+  fix_strategy: "switch_tool"
+  suggestions:
+    - action: "Verify assembly is mitochondrial (check length, GC content)"
+      params: {}
+    - action: "Try with more permissive e-value threshold"
+      params:
+        evalue: "1e-3"
+    - action: "Use tRNAscan-SE for tRNA detection (does not require homology)"
+      params: {}
+  confidence: 0.75
+
+- id: "fastqc_low_quality"
+  category: "qc"
+  tool: "fastqc"
+  error_pattern: "low quality|poor quality|per-base quality.*fail"
+  symptoms:
+    - "FastQC reports poor per-base sequence quality"
+    - "Quality scores drop below Q20 in later cycles"
+  root_cause: "Sequencing quality degradation, especially common in later cycles of Illumina runs"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Enable quality trimming with Trimmomatic"
+      params:
+        trimming: true
+        quality_threshold: 20
+    - action: "Use sliding window trimming"
+      params:
+        sliding_window: "4:20"
+    - action: "Consider re-sequencing if quality is extremely poor"
+      params: {}
+  confidence: 0.90
+
+- id: "assembly_contamination"
+  category: "assembly"
+  tool: "general"
+  error_pattern: "contamination|non-target|bacterial|adapter"
+  symptoms:
+    - "Assembly contains sequences from non-target organisms"
+    - "BLAST shows hits to bacterial or nuclear genomes"
+    - "Assembly is much larger than expected mitochondrial genome"
+  root_cause: "Input reads contain contamination from other organisms or nuclear mitochondrial DNA segments (NUMTs)"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Use GetOrganelle for targeted assembly with baiting"
+      alternative_tool: "getorganelle"
+    - action: "Map reads to reference and extract mapped reads"
+      params: {}
+    - action: "Filter contigs by length and coverage"
+      params:
+        min_contig_length: 5000
+  confidence: 0.85
+
+- id: "getorganelle_no_seed"
+  category: "assembly"
+  tool: "getorganelle"
+  error_pattern: "no seed|seed.*not found|cannot find.*seed"
+  symptoms:
+    - "GetOrganelle fails to find seed sequences"
+    - "No reads are recruited by the baiting step"
+  root_cause: "Reference seed sequences are too divergent from the target species"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Use custom seed sequences from closely related species"
+      params: {}
+    - action: "Lower the seed similarity threshold"
+      params:
+        seed_similarity: 0.7
+    - action: "Switch to SPAdes with careful mode"
+      alternative_tool: "spades"
+  confidence: 0.80
+
+- id: "novoplasty_no_seed_hit"
+  category: "assembly"
+  tool: "novoplasty"
+  error_pattern: "no seed hit|seed.*no match|cannot extend from seed"
+  symptoms:
+    - "NOVOPlasty cannot find the seed sequence in reads"
+    - "Assembly fails at seed extension step"
+  root_cause: "Seed sequence is too divergent from the target species mitochondrial genome"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Use a seed sequence from a more closely related species"
+      params: {}
+    - action: "Try with different genetic code setting"
+      params:
+        genetic_code: 2
+    - action: "Switch to GetOrganelle which uses multiple bait sequences"
+      alternative_tool: "getorganelle"
+  confidence: 0.80
+
+- id: "mitoz_python2_error"
+  category: "assembly"
+  tool: "mitoz"
+  error_pattern: "python.*2|Python 2.*required|No module named.*future"
+  symptoms:
+    - "MitoZ fails with Python 2 related errors"
+    - "Import errors for Python 2 modules"
+  root_cause: "MitoZ has Python 2 dependencies that conflict with Python 3 environment"
+  fix_strategy: "switch_tool"
+  suggestions:
+    - action: "Install MitoZ in a separate conda environment with Python 2"
+      params: {}
+    - action: "Use MitoZ version 3.x which supports Python 3"
+      params: {}
+    - action: "Switch to GetOrganelle for animal mitochondrial assembly"
+      alternative_tool: "getorganelle"
+  confidence: 0.85
+
+- id: "trnascan_no_trna"
+  category: "annotation"
+  tool: "trnascan-se"
+  error_pattern: "no tRNA|zero tRNA|no tRNA genes detected"
+  symptoms:
+    - "tRNAscan-SE reports no tRNA genes"
+    - "tRNA count is 0 in annotation results"
+  root_cause: "Assembly may be incomplete or tRNA regions are missing, or search parameters are too stringent"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Use less stringent search mode"
+      params:
+        search_mode: "normal"
+    - action: "Check if assembly contains tRNA regions by BLAST"
+      params: {}
+    - action: "Try MITOS2 for tRNA annotation with different algorithm"
+      alternative_tool: "mitos2"
+  confidence: 0.75
+
+- id: "general_disk_full"
+  category: "pipeline"
+  tool: "general"
+  error_pattern: "no space left|disk full|cannot write|write error"
+  symptoms:
+    - "Pipeline fails with disk space errors"
+    - "Intermediate files cannot be written"
+  root_cause: "Insufficient disk space for intermediate files"
+  fix_strategy: "adjust_params"
+  suggestions:
+    - action: "Enable cleanup of intermediate files"
+      params:
+        keep_intermediate: false
+    - action: "Enable compression of output files"
+      params:
+        compress: true
+    - action: "Use tmpfs or larger disk for working directory"
+      params: {}
+  confidence: 0.95

@@ -32,69 +32,15 @@ def _get_model_provider():
 
 logger = get_logger(__name__)
 
-_SHARED_CHROMA = None
-_CHROMA_LOCK = None
+_SHARED_KNOWLEDGE = None
+_KNOWLEDGE_LOCK = None
 
-def _get_chroma_lock():
-    global _CHROMA_LOCK
-    if _CHROMA_LOCK is None:
+def _get_knowledge_lock():
+    global _KNOWLEDGE_LOCK
+    if _KNOWLEDGE_LOCK is None:
         import threading
-        _CHROMA_LOCK = threading.Lock()
-    return _CHROMA_LOCK
-
-class HashEmbeddingFunction:
-    """
-    轻量级本地哈希嵌入器（完全离线）：
-    - 字符 n-gram (2..4)，固定维度 2048
-    - 采用 SHA1 对 n-gram 映射到桶，TF 计数后做 L2 归一化
-    - 兼容 Chroma 1.1.x：提供 __call__/embed_documents/embed_query/name/is_legacy
-    """
-    def __init__(self, n_features: int = 2048, ngram_min: int = 2, ngram_max: int = 4):
-        self.n_features = int(n_features)
-        self.ngram_min = int(ngram_min)
-        self.ngram_max = int(ngram_max)
-
-    def name(self):
-        return "local-hash"
-
-    def is_legacy(self):
-        return True
-
-    def _vectorize_one(self, text: str):
-        import math, hashlib
-        vec = [0.0] * self.n_features
-        if not text:
-            return vec
-        t = text.replace("\n", " ").replace("\r", " ")
-        n = len(t)
-        for ngram_len in range(self.ngram_min, self.ngram_max + 1):
-            if ngram_len <= 0 or ngram_len > n:
-                continue
-            for i in range(0, n - ngram_len + 1):
-                g = t[i:i+ngram_len]
-                h = hashlib.sha1(g.encode("utf-8")).digest()
-                idx = int.from_bytes(h[:8], "big") % self.n_features
-                vec[idx] += 1.0
-        s = math.sqrt(sum(v*v for v in vec))
-        if s > 0:
-            vec = [v / s for v in vec]
-        return vec
-
-    def _vectorize(self, texts):
-        if not texts:
-            return []
-        return [self._vectorize_one(x or "") for x in texts]
-
-    def __call__(self, input):
-        return self._vectorize(input)
-
-    def embed_documents(self, input):
-        return self._vectorize(input)
-
-    def embed_query(self, input):
-        if isinstance(input, str):
-            return self._vectorize([input])
-        return self._vectorize(input)
+        _KNOWLEDGE_LOCK = threading.Lock()
+    return _KNOWLEDGE_LOCK
 
 class BaseAgent(abc.ABC):
     """
@@ -110,12 +56,10 @@ class BaseAgent(abc.ABC):
     def __init__(self, name: str, config: Optional[Dict[str, Any]] = None):
         self.name = name
         self.config = config or {}
-        # RAG/Mem0 默认开启与默认参数
         self.config.setdefault("enable_rag", True)
         self.config.setdefault("rag_top_k", 4)
         self.config.setdefault("enable_memory", True)
-        # 每个 Agent 独立的 Mem0 客户端缓存
-        self._mem0 = None
+        self._knowledge = None
         self.status = AgentStatus.IDLE
         self.current_task: Optional[TaskSpec] = None
         self.metrics = AgentMetrics()
@@ -145,18 +89,16 @@ class BaseAgent(abc.ABC):
                 payload=payload
             )
             self.event_callback(event)
-            # Mem0 记忆集成（可选）
             try:
                 if self.config.get("enable_memory"):
                     self.memory_write({
                         "event_type": event_type,
                         "agent_name": self.name,
-                        "task_id": self.current_task.task_id,
+                        "task_id": self.current_task.task_id if self.current_task else "",
                         "tags": [self.name, event_type],
-                        "payload": payload,
+                        "summary": str(payload)[:500],
                     })
             except Exception:
-                # 记忆不可用时静默跳过
                 pass
     
     def run_tool(self, exe: str, args, cwd: Path, env: Optional[dict] = None, timeout: Optional[int] = None) -> dict:
@@ -530,123 +472,115 @@ class BaseAgent(abc.ABC):
         except Exception as e:
             return {"error": str(e), "available": False}
     
-    # ========== RAG 与记忆钩子（默认自动探测，可用即启用） ==========
-    def _get_shared_chroma(self):
-        """
-        获取共享的 Chroma 客户端与集合。创建失败时返回 None。
-        """
-        global _SHARED_CHROMA
-        lock = _get_chroma_lock()
+    # ========== RAG 与记忆钩子（基于知识库系统） ==========
+    def _get_knowledge_system(self):
+        global _SHARED_KNOWLEDGE
+        lock = _get_knowledge_lock()
         with lock:
-            if _SHARED_CHROMA is not None:
-                return _SHARED_CHROMA
+            if _SHARED_KNOWLEDGE is not None:
+                return _SHARED_KNOWLEDGE
             try:
-                from pathlib import Path as _P
-                import chromadb
-                chroma_base = os.getenv("MITO_CHROMA_DIR")
-                if chroma_base:
-                    base = _P(chroma_base)
-                else:
-                    base = _P.home() / ".mito-forge" / "chroma"
-                base.mkdir(parents=True, exist_ok=True)
-                client = chromadb.PersistentClient(path=str(base))
-                emb = HashEmbeddingFunction()
-
-                collection = client.get_or_create_collection(
-                    name="knowledge",
-                    metadata={"hnsw:space": "cosine"},
-                    embedding_function=emb,
-                )
-                _SHARED_CHROMA = {"client": client, "collection": collection}
-                return _SHARED_CHROMA
+                from ..knowledge.store import VectorStore
+                from ..knowledge.retriever import create_retriever
+                store = VectorStore()
+                retriever, reranker, assembler = create_retriever(store)
+                _SHARED_KNOWLEDGE = {
+                    "store": store,
+                    "retriever": retriever,
+                    "reranker": reranker,
+                    "assembler": assembler,
+                }
+                return _SHARED_KNOWLEDGE
             except Exception:
                 return None
 
-    def _get_mem0(self):
-        """
-        获取（并缓存）当前 Agent 独立的 Mem0 客户端。失败时返回 None。
-        """
-        if getattr(self, "_mem0", None) is not None:
-            return self._mem0
-        try:
-            from mem0 import Mem0
-            self._mem0 = Mem0()
-            return self._mem0
-        except Exception:
-            self._mem0 = None
-            return None
     def rag_augment(self, prompt: str, task: Optional[TaskSpec] = None, top_k: int = 4) -> (str, List[Dict[str, Any]]):
-        """
-        使用 Chroma 进行检索增强，返回增强后的提示与引用条目。
-        如不可用则返回原始提示与空列表。
-        """
-        # 支持通过环境变量模拟 RAG 返回，便于无依赖快速联调
         try:
             flag = (os.getenv("MITO_RAG_SIMULATE") or "").strip().lower()
             if flag in {"1", "true", "yes", "on"}:
                 simulated_citations: List[Dict[str, Any]] = [
-                    {"title": "模拟知识库条目：Assembly Best Practices", "source": "sim://kb/assembly_best_practices", "score": 0.99},
-                    {"title": "模拟知识库条目：QC Parameters", "source": "sim://kb/qc_parameters", "score": 0.97},
+                    {"title": "Simulated: Assembly Best Practices", "source": "sim://kb/assembly_best_practices", "score": 0.99},
+                    {"title": "Simulated: QC Parameters", "source": "sim://kb/qc_parameters", "score": 0.97},
                 ]
                 augmented = (
                     f"{prompt}"
-                    + "\n参考资料（模拟）："
+                    + "\n## Reference Materials (simulated)\n"
                     + "\n- " + simulated_citations[0]["title"]
                     + "\n- " + simulated_citations[1]["title"]
                 )
                 return augmented, simulated_citations
         except Exception:
-            # 若环境读取异常，继续正常路径
             pass
         try:
-            shared = self._get_shared_chroma()
-            if not shared or "collection" not in shared or shared["collection"] is None:
+            ks = self._get_knowledge_system()
+            if not ks:
                 return prompt, []
-            collection = shared["collection"]
-            query_text = prompt
-            res = collection.query(query_texts=[query_text], n_results=top_k)
+            from ..knowledge import RetrievalContext
+            context = RetrievalContext(
+                agent_name=self.name,
+                current_tool=getattr(self, '_current_tool', None),
+                kingdom=getattr(self, '_current_kingdom', None),
+                platform=getattr(self, '_current_platform', None),
+                error_type=getattr(self, '_current_error_type', None),
+                task_description=str(task)[:200] if task else None,
+            )
+            results = ks["retriever"].retrieve(
+                query=prompt,
+                context=context,
+                top_k=top_k,
+            )
+            results = ks["reranker"].rerank(
+                query=prompt,
+                results=results,
+                context=context,
+                top_k=top_k,
+            )
+            context_text = ks["assembler"].assemble(
+                query=prompt,
+                results=results,
+            )
             citations: List[Dict[str, Any]] = []
-            docs = res.get("documents", [[]])[0]
-            metas = res.get("metadatas", [[]])[0]
-            for i, doc in enumerate(docs):
-                meta = metas[i] if i < len(metas) else {}
+            for r in results:
                 citations.append({
-                    "title": meta.get("title") or meta.get("id") or f"doc_{i}",
-                    "source": meta.get("source") or "",
-                    "snippet": (doc or "")[:320],})
-            if citations:
-                lines = ["参考资料:"]
-                lines += [f"- {c['title']}: {c['snippet']}" for c in citations]
-                augmented = prompt + "\n" + "\n".join(lines)
+                    "title": r.metadata.get("title", r.metadata.get("faq_id", "")),
+                    "source": r.metadata.get("source_file", r.collection),
+                    "snippet": r.content[:320],
+                    "relevance": r.score,
+                })
+            if context_text:
+                augmented = f"{prompt}\n\n{context_text}"
                 return augmented, citations
             return prompt, []
         except Exception:
             return prompt, []
-    
+
     def memory_query(self, tags: List[str], top_k: int = 3) -> List[Dict[str, Any]]:
-        """
-        查询 Mem0 记忆（短期上下文）。不可用时返回空列表。
-        每个 Agent 保持独立的 Mem0 实例。
-        """
         try:
-            mem = self._get_mem0()
-            if mem is None:
+            ks = self._get_knowledge_system()
+            if not ks:
                 return []
-            items = mem.query({"tags": tags}, top_k=top_k)
-            return items or []
+            from ..knowledge import COLLECTION_RUN_EXPERIENCE
+            results = ks["store"].query(
+                collection_name=COLLECTION_RUN_EXPERIENCE,
+                query_text=" ".join(tags),
+                n_results=top_k,
+            )
+            return [
+                {
+                    "content": r.content,
+                    "score": r.score,
+                    "tags": r.metadata.get("tags", ""),
+                    "agent_name": r.metadata.get("agent_name", ""),
+                }
+                for r in results
+            ]
         except Exception:
             return []
-    
+
     def memory_write(self, event: Dict[str, Any]) -> None:
-        """
-        写入 Mem0 记忆（长期存储）。不可用时静默跳过。
-        每个 Agent 保持独立的 Mem0 实例。
-        """
         try:
-            mem = self._get_mem0()
-            if mem is None:
-                return
-            mem.write(event)
+            from ..knowledge.indexer import write_experience
+            write_experience(event)
         except Exception:
             pass
     

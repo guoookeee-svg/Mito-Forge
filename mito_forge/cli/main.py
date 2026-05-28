@@ -14,6 +14,7 @@ from .commands.assembly import assembly
 from .commands.annotate import annotate
 from .commands.tools_setup import tools_group
 from .commands.resume import resume
+from .commands.knowledge import knowledge_group
 
 class MitoGroup(click.Group):
     """自定义分组：默认仅显示核心命令；--expert 时显示全部命令"""
@@ -77,6 +78,7 @@ cli.add_command(assembly, name="assembly")
 cli.add_command(annotate, name="annotate")
 cli.add_command(tools_group, name="tools")
 cli.add_command(resume, name="resume")
+cli.add_command(knowledge_group, name="knowledge")
 
 @cli.command()
 @click.pass_context

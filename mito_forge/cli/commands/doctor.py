@@ -4,104 +4,94 @@ from pathlib import Path
 from ...utils.toolcheck import check_tools, DEFAULT_TOOLS, PLANT_ANNOTATION_TOOLS
 
 def run_checks(base_dir: Path | None = None) -> dict:
-    """
-    检查 RAG/Mem0 相关依赖与存储可写性，返回结构化结果。
-    仅做探测，不抛异常，便于单元测试与 CLI 复用。
-    """
     base = Path(base_dir) if base_dir else Path.cwd() / "work"
-    chroma_dir = base / "chroma"
     res = {
         "rag": {
             "chromadb": {"available": False, "detail": ""},
-            "embedding": {"available": False, "detail": ""},
-            "storage": {"path": str(chroma_dir), "writable": False},
+            "embedding": {"available": False, "detail": "", "level": "hash"},
+            "knowledge_base": {"available": False, "detail": "", "total_chunks": 0},
+            "storage": {"path": "", "writable": False},
         },
         "memory": {
-            "mem0": {"available": False, "detail": ""},
+            "experience_store": {"available": False, "detail": ""},
         },
     }
 
-    # 检查 chromadb 与 embedding
     try:
         import importlib
         chromadb_mod = importlib.import_module("chromadb")
-        # embedding 既可能来自 chromadb.utils.embedding_functions，也可能使用 sentence-transformers
         emb_detail = ""
         emb_available = False
+        emb_level = "hash"
         try:
-            ef = importlib.import_module("chromadb.utils.embedding_functions")
-            _ = getattr(ef, "SentenceTransformerEmbeddingFunction")
+            importlib.import_module("sentence_transformers")
             emb_available = True
-            emb_detail = "chromadb.utils.embedding_functions OK"
-        except Exception as e1:
-            # 退化检查 sentence-transformers 是否存在
-            try:
-                importlib.import_module("sentence_transformers")
-                emb_available = True
-                emb_detail = "sentence-transformers OK"
-            except Exception as e2:
-                emb_detail = f"missing sentence-transformers ({e2})"
+            emb_level = "sentence_transformer"
+            emb_detail = "sentence-transformers OK (semantic embedding)"
+        except Exception:
+            emb_detail = "hash embedding (install sentence-transformers for semantic search)"
         res["rag"]["chromadb"]["available"] = True
         res["rag"]["chromadb"]["detail"] = f"chromadb OK: {getattr(chromadb_mod, '__version__', 'unknown')}"
         res["rag"]["embedding"]["available"] = emb_available
         res["rag"]["embedding"]["detail"] = emb_detail
+        res["rag"]["embedding"]["level"] = emb_level
     except Exception as e:
         res["rag"]["chromadb"]["available"] = False
-        res["rag"]["chromadb"]["detail"] = f"module not found or init failed: {e}"
+        res["rag"]["chromadb"]["detail"] = f"module not found: {e}"
         res["rag"]["embedding"]["available"] = False
-        res["rag"]["embedding"]["detail"] = "embedding unavailable due to chromadb missing"
+        res["rag"]["embedding"]["detail"] = "unavailable due to chromadb missing"
 
-    # 检查存储可写
     try:
-        chroma_dir.mkdir(parents=True, exist_ok=True)
-        test_file = chroma_dir / ".write_test"
-        with open(test_file, "w", encoding="utf-8") as f:
-            f.write("ok")
+        from ...core.knowledge.store import VectorStore
+        from ...core.knowledge import ALL_COLLECTIONS
+        store = VectorStore()
+        res["rag"]["storage"]["path"] = str(store.persist_dir)
+        total = sum(store.count(c) for c in ALL_COLLECTIONS)
+        res["rag"]["knowledge_base"]["available"] = total > 0
+        res["rag"]["knowledge_base"]["total_chunks"] = total
+        res["rag"]["knowledge_base"]["detail"] = f"{total} chunks indexed across {len(ALL_COLLECTIONS)} collections"
+        store.persist_dir.mkdir(parents=True, exist_ok=True)
+        test_file = store.persist_dir / ".write_test"
+        test_file.write_text("ok")
         test_file.unlink(missing_ok=True)
         res["rag"]["storage"]["writable"] = True
-    except Exception:
+    except Exception as e:
+        res["rag"]["knowledge_base"]["available"] = False
+        res["rag"]["knowledge_base"]["detail"] = f"error: {e}"
         res["rag"]["storage"]["writable"] = False
 
-    # 检查 mem0
     try:
-        import importlib
-        mem0_mod = importlib.import_module("mem0")
-        # 进一步探测构造是否可用（不必真的操作后端）
-        _Mem0 = getattr(mem0_mod, "Mem0", None)
-        if _Mem0 is None:
-            raise RuntimeError("mem0.Mem0 not found")
-        # 尝试轻量构造（可能会失败，保持容错）
-        try:
-            _ = _Mem0()
-            mem_detail = "Mem0 OK"
-            available = True
-        except Exception as e:
-            mem_detail = f"Mem0 import OK but init failed: {e}"
-            available = True  # 认为模块可用，初始化问题交给运行时
-        res["memory"]["mem0"]["available"] = available
-        res["memory"]["mem0"]["detail"] = mem_detail
+        from pathlib import Path as _P
+        exp_dir = _P.home() / ".mito-forge" / "experience"
+        if exp_dir.exists():
+            count = sum(1 for _ in exp_dir.rglob("*.json"))
+            res["memory"]["experience_store"]["available"] = True
+            res["memory"]["experience_store"]["detail"] = f"{count} experience records in {exp_dir}"
+        else:
+            res["memory"]["experience_store"]["available"] = True
+            res["memory"]["experience_store"]["detail"] = "no experience records yet (will be created on first run)"
     except Exception as e:
-        res["memory"]["mem0"]["available"] = False
-        res["memory"]["mem0"]["detail"] = f"module not found: {e}"
+        res["memory"]["experience_store"]["available"] = False
+        res["memory"]["experience_store"]["detail"] = f"error: {e}"
 
     return res
 
 def print_report(result: dict) -> None:
-    """
-    将 run_checks 的结果以人类可读形式输出。
-    """
     rag = result.get("rag", {})
     mem = result.get("memory", {})
 
     chroma_ok = rag.get("chromadb", {}).get("available", False)
     emb_ok = rag.get("embedding", {}).get("available", False)
+    emb_level = rag.get("embedding", {}).get("level", "hash")
+    kb = rag.get("knowledge_base", {})
     storage = rag.get("storage", {})
-    mem0_ok = mem.get("mem0", {}).get("available", False)
+    exp_ok = mem.get("experience_store", {}).get("available", False)
 
     click.echo(f"RAG/ChromaDB: {'OK' if chroma_ok else 'MISSING'}")
-    click.echo(f"Embedding: {'OK' if emb_ok else 'MISSING'}")
+    click.echo(f"Embedding: {'OK' if emb_ok else 'MISSING'} (level: {emb_level})")
+    click.echo(f"Knowledge Base: {'OK' if kb.get('available') else 'EMPTY'} ({kb.get('detail', '')})")
     click.echo(f"RAG Storage: {storage.get('path', '')} (writable={storage.get('writable', False)})")
-    click.echo(f"Mem0: {'OK' if mem0_ok else 'MISSING'}")
+    click.echo(f"Experience Store: {'OK' if exp_ok else 'MISSING'} ({mem.get('experience_store', {}).get('detail', '')})")
 
 
 def interactive_install(missing_tools: list, detail: dict):
