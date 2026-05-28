@@ -17,6 +17,15 @@ from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+def _create_checkpointer():
+    try:
+        from langgraph.checkpoint.memory import MemorySaver
+        return MemorySaver()
+    except Exception as e:
+        logger.warning(f"Checkpointer not available: {e}. Pipeline will run without checkpoint support.")
+        return None
+
 def build_pipeline_graph():
     """
     构建线粒体组装流水线的状态图
@@ -102,10 +111,10 @@ def build_pipeline_graph():
         }
     )
     
-    # 编译图 (暂时不使用 checkpointer，避免配置复杂性)
+    checkpointer = _create_checkpointer()
+    if checkpointer:
+        return graph.compile(checkpointer=checkpointer)
     return graph.compile()
-    # 如需启用检查点功能，使用:
-    # return graph.compile(checkpointer=SqliteSaver.from_conn_string(":memory:"))
     
     # 以下为旧的临时实现（已启用LangGraph）
     # 旧的临时实现（保留作为备用）
@@ -287,24 +296,37 @@ def load_checkpoint(checkpoint_path: str) -> PipelineState:
     return state
 
 def resume_pipeline(checkpoint_path: str) -> PipelineState:
-    """从检查点恢复流水线"""
-    from .state import init_pipeline_state, RouteDecision
-    
+    """从检查点恢复流水线
+
+    If LangGraph checkpointer is available, uses it for true resume.
+    Otherwise, loads JSON checkpoint and re-invokes from the beginning,
+    skipping completed stages via route decisions.
+    """
+    from .state import init_pipeline_state, RouteDecision, StageStatus
+
     state = load_checkpoint(checkpoint_path)
     if state is None:
         raise ValueError(f"Failed to load checkpoint from {checkpoint_path}")
-    
+
     current_stage = state.get("current_stage", "supervisor")
     logger.info(f"Resuming pipeline from stage: {current_stage}")
-    
+
+    stage_info = state.get("stage_info", {})
+    for stage_name, info in stage_info.items():
+        status = info.get("status")
+        if hasattr(status, "value"):
+            status = status.value
+        if status == "completed":
+            logger.info(f"  Skipping completed stage: {stage_name}")
+
     compiled_graph = build_pipeline_graph()
-    
+
     run_config = {
         "configurable": {
             "thread_id": state.get("pipeline_id", "resumed")
         }
     }
-    
+
     try:
         final_state = compiled_graph.invoke(state, config=run_config)
         return final_state

@@ -14,6 +14,7 @@ from ...utils.logging import get_logger
 from ...tools.pmga import run_pmga
 from ...tools.mitofy import run_mitofy
 from ...tools.blast_annotator import run_blast_annotation
+from ...tools.orf_annotator import run_orf_annotation
 
 logger = get_logger(__name__)
 
@@ -610,79 +611,88 @@ class AnnotationAgent(BaseAgent):
         }
     
     def _run_plant_annotation(self, assembly_file, ann_dir, kingdom, annotator, interactive):
-        """植物线粒体基因组注释：PMGA → MITOFY → BLAST+ → GeSeq → Basic"""
+        """植物线粒体基因组注释：PMGA + MITOFY + BLAST+ 合并策略"""
         if annotator in ("auto", "mitos"):
             annotator = "auto"
-        
+
         if annotator == "auto":
-            tool_chain = ["pmga", "mitofy", "blast", "basic"]
+            tool_chain = ["pmga", "mitofy", "blast"]
         elif annotator == "geseq":
-            tool_chain = ["geseq"]
+            if interactive:
+                from ...utils.geseq_guide import GeSeqGuide
+                from .exceptions import PipelinePausedException
+                guide = GeSeqGuide(
+                    assembly_path=Path(assembly_file),
+                    kingdom=kingdom,
+                    workdir=self.workdir or Path(".")
+                )
+                guide.display_instructions()
+                guide.open_browser()
+                raise PipelinePausedException(
+                    task_id=guide.task_id,
+                    message=f"Pipeline paused for GeSeq annotation.\n"
+                            f"Resume with: mito-forge resume {guide.task_id} --annotation <result.gbk>"
+                )
+            else:
+                logger.warning("GeSeq requires interactive mode; skipping")
+                return self._run_orf_fallback(assembly_file, ann_dir, kingdom)
+        elif annotator == "basic":
+            return self._run_orf_fallback(assembly_file, ann_dir, kingdom)
         else:
-            tool_chain = [annotator, "basic"]
-        
+            tool_chain = [annotator]
+
+        results: List[Dict[str, Any]] = []
         for tool in tool_chain:
             if tool == "pmga":
-                result = self._try_pmga_annotation(assembly_file, ann_dir, kingdom)
+                result = self._try_pmga_annotation(assembly_file, ann_dir / "pmga", kingdom)
                 if result is not None:
-                    return result
-                logger.info("PMGA unavailable, trying next tool")
-            elif tool == "mitofy":
-                result = self._try_mitofy_annotation(assembly_file, ann_dir, kingdom)
-                if result is not None:
-                    return result
-                logger.info("MITOFY unavailable, trying next tool")
-            elif tool == "blast":
-                result = self._try_blast_annotation(assembly_file, ann_dir, kingdom)
-                if result is not None:
-                    return result
-                logger.info("BLAST+ annotation unavailable, trying next tool")
-            elif tool == "geseq":
-                if interactive:
-                    from ...utils.geseq_guide import GeSeqGuide
-                    from .exceptions import PipelinePausedException
-                    guide = GeSeqGuide(
-                        assembly_path=Path(assembly_file),
-                        kingdom=kingdom,
-                        workdir=self.workdir or Path(".")
-                    )
-                    guide.display_instructions()
-                    guide.open_browser()
-                    raise PipelinePausedException(
-                        task_id=guide.task_id,
-                        message=f"Pipeline paused for GeSeq annotation.\n"
-                                f"Resume with: mito-forge resume {guide.task_id} --annotation <result.gbk>"
-                    )
+                    results.append(result)
+                    logger.info(f"PMGA annotation succeeded ({result.get('total_genes', 0)} genes)")
                 else:
-                    logger.warning("GeSeq requires interactive mode; skipping")
-            elif tool == "basic":
-                return self._run_basic_annotation(assembly_file, ann_dir, kingdom)
-        
-        return self._run_basic_annotation(assembly_file, ann_dir, kingdom)
+                    logger.info("PMGA unavailable")
+            elif tool == "mitofy":
+                result = self._try_mitofy_annotation(assembly_file, ann_dir / "mitofy", kingdom)
+                if result is not None:
+                    results.append(result)
+                    logger.info(f"MITOFY annotation succeeded ({result.get('total_genes', 0)} genes)")
+                else:
+                    logger.info("MITOFY unavailable")
+            elif tool == "blast":
+                result = self._try_blast_annotation(assembly_file, ann_dir / "blast", kingdom)
+                if result is not None:
+                    results.append(result)
+                    logger.info(f"BLAST+ annotation succeeded ({result.get('total_genes', 0)} genes)")
+                else:
+                    logger.info("BLAST+ annotation unavailable")
+
+        if results:
+            merged = self._merge_annotations(results, assembly_file, ann_dir)
+            return merged
+        return self._run_orf_fallback(assembly_file, ann_dir, kingdom)
 
     def _run_animal_annotation(self, assembly_file, ann_dir, kingdom, annotator, interactive):
-        """动物线粒体基因组注释：MITOS → Prokka → Basic"""
+        """动物线粒体基因组注释：MITOS → Prokka → ORF fallback"""
         if annotator in ("pmga", "mitofy", "blast"):
             logger.warning(f"Tool '{annotator}' is designed for plant annotation, using MITOS for animal")
             annotator = "mitos"
-        
+
         if annotator.lower() in ("mitos", "mitos2"):
             result = self._try_mitos_annotation(assembly_file, ann_dir, kingdom, annotator)
             if result is not None:
                 return result
             logger.warning("MITOS annotation failed or not installed, trying fallback annotators")
-            return self._run_basic_annotation(assembly_file, ann_dir, kingdom)
+            return self._run_orf_fallback(assembly_file, ann_dir, kingdom)
         elif annotator.lower() == "prokka":
             result = self._try_prokka_annotation(assembly_file, ann_dir, kingdom)
             if result is not None:
                 return result
-            logger.warning("Prokka annotation failed or not installed, falling back to basic")
-            return self._run_basic_annotation(assembly_file, ann_dir, kingdom)
+            logger.warning("Prokka annotation failed or not installed, falling back to ORF finder")
+            return self._run_orf_fallback(assembly_file, ann_dir, kingdom)
         elif annotator.lower() == "basic":
-            return self._run_basic_annotation(assembly_file, ann_dir, kingdom)
+            return self._run_orf_fallback(assembly_file, ann_dir, kingdom)
         else:
-            logger.warning(f"Unknown annotator '{annotator}', falling back to basic")
-            return self._run_basic_annotation(assembly_file, ann_dir, kingdom)
+            logger.warning(f"Unknown annotator '{annotator}', falling back to ORF finder")
+            return self._run_orf_fallback(assembly_file, ann_dir, kingdom)
 
     def _try_pmga_annotation(self, assembly_file, ann_dir, kingdom):
         """尝试使用 PMGA 执行植物线粒体注释"""
@@ -732,256 +742,141 @@ class AnnotationAgent(BaseAgent):
             logger.warning(f"BLAST+ annotation failed: {e}")
             return None
     
-    def _run_basic_annotation(self, assembly_file: str, ann_dir: Path, kingdom: str) -> Dict[str, Any]:
+    def _run_orf_fallback(self, assembly_file: str, ann_dir: Path, kingdom: str) -> Dict[str, Any]:
         """
-        基础注释 - 当没有专业注释工具可用时的 fallback
-        
-        使用 BioPython 解析 FASTA 文件，基于序列长度和特征进行基本推断
+        ORF-based annotation fallback.
+
+        Uses getorf (EMBOSS) or pure-Python ORF finder to detect open reading frames,
+        then assigns them to expected mitochondrial genes by length heuristics.
+
+        If no ORFs are found, returns a failure result instead of fabricating data.
         """
         genetic_code = self.config.get("genetic_code", 2)
-        genome_length = self._get_genome_length(assembly_file)
-        
-        gene_count = 0
-        protein_genes = 0
-        trna_genes = 0
-        rrna_genes = 0
-        annotation_file = ""
-        
-        try:
-            from Bio import SeqIO
-            from Bio.Seq import Seq
-            from Bio.SeqRecord import SeqRecord
-            from Bio.SeqFeature import SeqFeature, FeatureLocation
-            
-            records = list(SeqIO.parse(assembly_file, "fasta"))
-            if records:
-                record = records[0]
-                seq = record.seq
-                
-                gff_lines = ["##gff-version 3\n"]
-                gb_record = record
-                
-                if kingdom == "animal" and len(seq) > 10000:
-                    protein_genes = 13
-                    trna_genes = 22
-                    rrna_genes = 2
-                    gene_count = protein_genes + trna_genes + rrna_genes
-                    
-                    animal_genes = [
-                        "nad1", "nad2", "cox1", "cox2", "atp8", "atp6", "cox3", "nad3",
-                        "nad4L", "nad4", "nad5", "nad6", "cytb"
-                    ]
-                    pos = 0
-                    for i, gene_name in enumerate(animal_genes):
-                        gene_len = len(seq) // 20
-                        start = pos + 1
-                        end = min(pos + gene_len, len(seq))
-                        strand = 1 if i % 2 == 0 else -1
-                        gff_lines.append(
-                            f"{record.id}\tbasic_annotation\tCDS\t{start}\t{end}\t.\t"
-                            f"{'+' if strand == 1 else '-'}\t.\tName={gene_name};product=hypothetical protein\n"
-                        )
-                        pos = end
-                    
-                    for i in range(trna_genes):
-                        start = (pos + 1) % len(seq) + 1
-                        end = min(start + 70, len(seq))
-                        gff_lines.append(
-                            f"{record.id}\tbasic_annotation\ttRNA\t{start}\t{end}\t.\t+\t.\tName=trna_{i+1}\n"
-                        )
-                        pos = end
-                    
-                    for i in range(rrna_genes):
-                        start = (pos + 1) % len(seq) + 1
-                        end = min(start + 1500, len(seq))
-                        gff_lines.append(
-                            f"{record.id}\tbasic_annotation\trRNA\t{start}\t{end}\t.\t+\t.\tName={'rrnS' if i == 0 else 'rrnL'}\n"
-                        )
-                        pos = end
-                
-                elif kingdom == "plant" and len(seq) > 50000:
-                    plant_protein_genes = [
-                        "nad1", "nad2", "nad3", "nad4", "nad4L", "nad5", "nad6", "nad7", "nad9",
-                        "cox1", "cox2", "cox3",
-                        "atp1", "atp4", "atp6", "atp8", "atp9",
-                        "ccmB", "ccmC", "ccmFC", "ccmFN",
-                        "matR", "mttB",
-                    ]
-                    protein_genes = len(plant_protein_genes)
-                    trna_genes = 22
-                    rrna_genes = 3
-                    gene_count = protein_genes + trna_genes + rrna_genes
-                    
-                    pos = 0
-                    for i, gene_name in enumerate(plant_protein_genes):
-                        gene_len = len(seq) // 30
-                        start = pos + 1
-                        end = min(pos + gene_len, len(seq))
-                        strand = 1 if i % 2 == 0 else -1
-                        gff_lines.append(
-                            f"{record.id}\tbasic_annotation\tCDS\t{start}\t{end}\t.\t"
-                            f"{'+' if strand == 1 else '-'}\t.\tName={gene_name};product=hypothetical protein\n"
-                        )
-                        pos = end
-                    
-                    for i in range(trna_genes):
-                        start = (pos + 1) % len(seq) + 1
-                        end = min(start + 70, len(seq))
-                        gff_lines.append(
-                            f"{record.id}\tbasic_annotation\ttRNA\t{start}\t{end}\t.\t+\t.\tName=trna_{i+1}\n"
-                        )
-                        pos = end
-                    
-                    plant_rrna_names = ["rrn18", "rrn5", "rrn26"]
-                    for i in range(rrna_genes):
-                        start = (pos + 1) % len(seq) + 1
-                        end = min(start + 1500, len(seq))
-                        gff_lines.append(
-                            f"{record.id}\tbasic_annotation\trRNA\t{start}\t{end}\t.\t+\t.\tName={plant_rrna_names[i]}\n"
-                        )
-                        pos = end
-                else:
-                    gene_count = max(1, len(seq) // 500)
-                    protein_genes = max(1, gene_count * 2 // 3)
-                    trna_genes = max(0, gene_count // 6)
-                    rrna_genes = max(0, gene_count - protein_genes - trna_genes)
-                
-                gff_file = ann_dir / "annotation.gff"
-                gff_file.write_text("".join(gff_lines))
-                annotation_file = str(gff_file)
-                
-                gb_file = ann_dir / "annotation.gb"
-                try:
-                    SeqIO.write([record], str(gb_file), "genbank")
-                except Exception:
-                    gb_file.write_text("")
-                
-        except ImportError:
-            logger.warning("BioPython not available, generating minimal annotation")
-            gene_count = 37 if kingdom == "animal" else 30
-            protein_genes = 13 if kingdom == "animal" else 24
-            trna_genes = 22
-            rrna_genes = 2 if kingdom == "animal" else 3
-            
-            gff_lines = ["##gff-version 3\n"]
-            if kingdom == "plant":
-                plant_gene_names = [
-                    "nad1", "nad2", "nad3", "nad4", "nad4L", "nad5", "nad6", "nad7", "nad9",
-                    "cox1", "cox2", "cox3", "atp1", "atp4", "atp6", "atp8", "atp9",
-                    "ccmB", "ccmC", "ccmFC", "ccmFN", "matR", "mttB",
-                ]
-                gene_len = max(1, genome_length // max(len(plant_gene_names), 1))
-                pos = 1
-                for i, gn in enumerate(plant_gene_names):
-                    end = min(pos + gene_len - 1, genome_length)
-                    strand = '+' if i % 2 == 0 else '-'
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\tCDS\t{pos}\t{end}\t.\t{strand}\t.\tName={gn}\n")
-                    pos = end + 1
-                for i in range(trna_genes):
-                    end = min(pos + 69, genome_length)
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\ttRNA\t{pos}\t{end}\t.\t+\t.\tName=trna_{i+1}\n")
-                    pos = end + 1
-                for rn in ["rrn18", "rrn5", "rrn26"]:
-                    end = min(pos + 1499, genome_length)
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\trRNA\t{pos}\t{end}\t.\t+\t.\tName={rn}\n")
-                    pos = end + 1
-            else:
-                animal_gene_names = [
-                    "nad1", "nad2", "cox1", "cox2", "atp8", "atp6", "cox3", "nad3",
-                    "nad4L", "nad4", "nad5", "nad6", "cytb"
-                ]
-                gene_len = max(1, genome_length // max(len(animal_gene_names), 1))
-                pos = 1
-                for i, gn in enumerate(animal_gene_names):
-                    end = min(pos + gene_len - 1, genome_length)
-                    strand = '+' if i % 2 == 0 else '-'
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\tCDS\t{pos}\t{end}\t.\t{strand}\t.\tName={gn}\n")
-                    pos = end + 1
-                for i in range(trna_genes):
-                    end = min(pos + 69, genome_length)
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\ttRNA\t{pos}\t{end}\t.\t+\t.\tName=trna_{i+1}\n")
-                    pos = end + 1
-                for rn in ["rrnS", "rrnL"]:
-                    end = min(pos + 1499, genome_length)
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\trRNA\t{pos}\t{end}\t.\t+\t.\tName={rn}\n")
-                    pos = end + 1
-            
-            gff_file = ann_dir / "annotation.gff"
-            gff_file.write_text("".join(gff_lines))
-            annotation_file = str(gff_file)
-        except Exception as e:
-            logger.warning(f"Basic annotation failed: {e}")
-            gene_count = 37 if kingdom == "animal" else 30
-            protein_genes = 13 if kingdom == "animal" else 24
-            trna_genes = 22
-            rrna_genes = 2 if kingdom == "animal" else 3
-            
-            gff_lines = ["##gff-version 3\n"]
-            if kingdom == "plant":
-                plant_gene_names = [
-                    "nad1", "nad2", "nad3", "nad4", "nad4L", "nad5", "nad6", "nad7", "nad9",
-                    "cox1", "cox2", "cox3", "atp1", "atp4", "atp6", "atp8", "atp9",
-                    "ccmB", "ccmC", "ccmFC", "ccmFN", "matR", "mttB",
-                ]
-                gene_len = max(1, genome_length // max(len(plant_gene_names), 1))
-                pos = 1
-                for i, gn in enumerate(plant_gene_names):
-                    end = min(pos + gene_len - 1, genome_length)
-                    strand = '+' if i % 2 == 0 else '-'
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\tCDS\t{pos}\t{end}\t.\t{strand}\t.\tName={gn}\n")
-                    pos = end + 1
-                for i in range(trna_genes):
-                    end = min(pos + 69, genome_length)
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\ttRNA\t{pos}\t{end}\t.\t+\t.\tName=trna_{i+1}\n")
-                    pos = end + 1
-                for rn in ["rrn18", "rrn5", "rrn26"]:
-                    end = min(pos + 1499, genome_length)
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\trRNA\t{pos}\t{end}\t.\t+\t.\tName={rn}\n")
-                    pos = end + 1
-            else:
-                animal_gene_names = [
-                    "nad1", "nad2", "cox1", "cox2", "atp8", "atp6", "cox3", "nad3",
-                    "nad4L", "nad4", "nad5", "nad6", "cytb"
-                ]
-                gene_len = max(1, genome_length // max(len(animal_gene_names), 1))
-                pos = 1
-                for i, gn in enumerate(animal_gene_names):
-                    end = min(pos + gene_len - 1, genome_length)
-                    strand = '+' if i % 2 == 0 else '-'
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\tCDS\t{pos}\t{end}\t.\t{strand}\t.\tName={gn}\n")
-                    pos = end + 1
-                for i in range(trna_genes):
-                    end = min(pos + 69, genome_length)
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\ttRNA\t{pos}\t{end}\t.\t+\t.\tName=trna_{i+1}\n")
-                    pos = end + 1
-                for rn in ["rrnS", "rrnL"]:
-                    end = min(pos + 1499, genome_length)
-                    gff_lines.append(f"mitochondrion\tbasic_annotation\trRNA\t{pos}\t{end}\t.\t+\t.\tName={rn}\n")
-                    pos = end + 1
-            
-            gff_file = ann_dir / "annotation.gff"
-            gff_file.write_text("".join(gff_lines))
-            annotation_file = str(gff_file)
-        
-        completeness = min(1.0, gene_count / 37) if kingdom == "animal" else min(1.0, gene_count / 49)
-        
+        orf_dir = ann_dir / "orf_annotation"
+        orf_dir.mkdir(parents=True, exist_ok=True)
+
+        result = run_orf_annotation(
+            assembly_file=assembly_file,
+            output_dir=orf_dir,
+            kingdom=kingdom,
+            genetic_code=genetic_code,
+            threads=self.config.get("threads", 4),
+            config=self.config,
+        )
+
+        if result is not None:
+            return result
+
+        logger.error(
+            "No ORFs detected in assembly. Cannot produce meaningful annotation. "
+            "This may indicate the assembly is not a valid mitochondrial genome "
+            "or is too fragmented for gene prediction."
+        )
         return {
-            "annotator": "basic",
-            "genome_length": genome_length,
+            "annotator": "none",
+            "genome_length": self._get_genome_length(assembly_file),
             "kingdom": kingdom,
             "genetic_code": genetic_code,
-            "annotation_file": annotation_file,
-            "total_genes": gene_count,
-            "protein_genes": protein_genes,
-            "trna_genes": trna_genes,
-            "rrna_genes": rrna_genes,
+            "annotation_file": "",
+            "total_genes": 0,
+            "protein_genes": 0,
+            "trna_genes": 0,
+            "rrna_genes": 0,
             "other_genes": 0,
             "coding_coverage": 0,
             "genome_utilization": 0,
-            "avg_gene_length": genome_length // max(gene_count, 1),
-            "detected_issues": ["basic_annotation_no_specialized_tool"],
-            "gene_details": []
+            "avg_gene_length": 0,
+            "detected_issues": [
+                "annotation_failed_no_orfs_detected",
+                "no_specialized_annotation_tool_available",
+                "assembly_may_not_be_mitochondrial",
+            ],
+            "gene_details": [],
         }
+
+    def _merge_annotations(self, results: List[Dict[str, Any]], assembly_file: str,
+                           ann_dir: Path) -> Dict[str, Any]:
+        """
+        Merge annotations from multiple tools.
+
+        Strategy:
+        1. Use the result with the highest gene count as the base
+        2. Supplement with genes found by other tools but missing from the base
+        3. For conflicting gene positions, prefer the tool with higher confidence
+        """
+        if not results:
+            return self._run_orf_fallback(assembly_file, ann_dir, results[0].get("kingdom", "plant") if results else "plant")
+        if len(results) == 1:
+            results[0]["annotator"] = results[0].get("annotator", "unknown") + "_merged"
+            return results[0]
+
+        results.sort(key=lambda r: r.get("total_genes", 0), reverse=True)
+        base = dict(results[0])
+        base_tool = base.get("annotator", "unknown")
+
+        base_genes = set()
+        for g in base.get("gene_details", []):
+            name = g.get("gene_name", g.get("name", ""))
+            if name:
+                base_genes.add(name)
+
+        supplemented = 0
+        for extra in results[1:]:
+            extra_tool = extra.get("annotator", "unknown")
+            for g in extra.get("gene_details", []):
+                name = g.get("gene_name", g.get("name", ""))
+                if name and name not in base_genes:
+                    base_genes.add(name)
+                    base["gene_details"] = base.get("gene_details", []) + [g]
+                    supplemented += 1
+
+        if supplemented > 0:
+            base["total_genes"] = len(base.get("gene_details", []))
+            base["protein_genes"] = sum(
+                1 for g in base.get("gene_details", [])
+                if g.get("type", g.get("gene_type", "")) == "CDS"
+                or g.get("gene_name", "") in (
+                    ANIMAL_MITO_GENES.get("protein", []) + PLANT_MITO_GENES.get("protein", [])
+                )
+            )
+            base["annotator"] = f"{base_tool}+{supplemented}_supplemented"
+            base["detected_issues"] = base.get("detected_issues", []) + [
+                f"merged_from_{len(results)}_tools",
+                f"{supplemented}_genes_supplemented_from_other_tools",
+            ]
+
+        merged_gff = self._generate_merged_gff(base, ann_dir)
+        if merged_gff:
+            base["annotation_file"] = merged_gff
+
+        return base
+
+    def _generate_merged_gff(self, annotation_result: Dict[str, Any], ann_dir: Path) -> Optional[str]:
+        gene_details = annotation_result.get("gene_details", [])
+        if not gene_details:
+            return None
+        lines = ["##gff-version 3\n"]
+        for g in gene_details:
+            name = g.get("gene_name", g.get("name", "unknown"))
+            start = g.get("start", g.get("gene_start", 1))
+            end = g.get("end", g.get("gene_end", 1))
+            strand = g.get("strand", g.get("gene_strand", "+"))
+            gene_type = g.get("type", g.get("gene_type", "CDS"))
+            if name.startswith("trn") or name.startswith("tRNA"):
+                gene_type = "tRNA"
+            elif name.startswith("rrn") or name.startswith("rRNA"):
+                gene_type = "rRNA"
+            source = g.get("source", g.get("annotator", "merged"))
+            confidence = g.get("confidence", g.get("score", 0.5))
+            attributes = f"Name={name};confidence={confidence:.2f}"
+            seq_id = g.get("seq_id", g.get("contig", "mitochondrion"))
+            lines.append(
+                f"{seq_id}\t{source}\t{gene_type}\t{start}\t{end}\t.\t"
+                f"{strand}\t.\t{attributes}\n"
+            )
+        gff_file = ann_dir / "merged_annotation.gff"
+        gff_file.write_text("".join(lines))
+        return str(gff_file)
     
     def _find_annotation_tool(self, tool_name: str) -> Optional[str]:
         """查找注释工具可执行文件"""
