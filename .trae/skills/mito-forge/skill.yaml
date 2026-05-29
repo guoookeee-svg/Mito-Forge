@@ -1,20 +1,11 @@
 name: mito-forge
 description: |
-  Mitochondrial genome assembly, annotation, and analysis pipeline powered by multi-agent AI.
-  Use this skill when the user wants to assemble, annotate, polish, or analyze mitochondrial genomes
-  from sequencing data (Illumina short-read or Nanopore long-read). Also use for benchmarking,
-  RAG knowledge base management, and pipeline configuration.
+  Perform mitochondrial genome assembly, polishing, and annotation from raw sequencing data.
+  Use this skill when the user wants to assemble, annotate, or analyze mitochondrial genomes
+  from Illumina short-read or Nanopore long-read data.
 
-  NOT for: general genome assembly (nuclear/chloroplast only), variant calling, phylogenetics,
-  or non-mitochondrial tasks.
+  This skill provides step-by-step instructions for the full pipeline:
+  environment setup → data preparation → QC → assembly → polishing → annotation → report generation.
 
-  Key capabilities:
-  - End-to-end mitochondrial genome pipeline (QC → Assembly → Polishing → Annotation → Report)
-  - Multi-agent architecture with LangGraph state machine
-  - AI-driven error diagnosis and auto-recovery
-  - Plant and animal mitochondrial genome support
-  - RAG-enhanced knowledge retrieval for bioinformatics decisions
-  - Benchmarking against MitoZ, GetOrganelle, NOVOPlasty, MITOS2
-
-  Triggers: mitochondrial, mito, genome assembly, annotation, SPAdes, Flye, MitoZ, GetOrganelle,
-  PMGA, MITOFY, BLAST+, Pilon, Racon, Medaka, organelle, mitogenome, mitogenomics
+  Triggers: mitochondrial genome, mito assembly, mitogenome, organelle assembly,
+  SPAdes, Flye, MitoZ, GetOrganelle, PMGA, MITOFY, mitochondrial annotation
