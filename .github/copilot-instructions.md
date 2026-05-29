@@ -1,0 +1,78 @@
+# Mito-Forge: Mitochondrial Genome Assembly Rules
+
+## Project Context
+This project is a multi-agent AI pipeline for mitochondrial genome assembly, polishing, and annotation. It supports animal and plant mitochondrial genomes from Illumina and Nanopore data.
+
+## Architecture
+- 5 Agents: Supervisor, QC, Assembly, Annotation, Report
+- State machine: LangGraph StateGraph with conditional routing and checkpoint
+- RAG: ChromaDB + sentence-transformers (or BM25 fallback)
+- LLM: OpenAI/Ollama/Anthropic for error diagnosis and decision-making
+
+## Critical Rules
+
+### NEVER
+- Fabricate gene positions in annotation (no equal-division guessing)
+- Modify input data files in-place
+- Expose API keys in logs or output
+- Run unescaped shell commands from user input
+- Silently ignore critical failures (0 contigs, 0 genes)
+
+### ALWAYS
+- Check environment with `mito-forge doctor` before pipeline runs
+- Index knowledge base with `mito-forge knowledge index` if empty
+- Validate assembly length against expected range (animal: 14-20kb, plant: 200-800kb)
+- Use ORF finder (not fake annotation) when specialized tools are unavailable
+- Return failure status instead of fabricated data when annotation completely fails
+
+## Code Style
+- Python 3.10+, type hints on all function signatures
+- No comments in code unless explicitly asked
+- Use `pathlib.Path` not `str` for file paths
+- Use `subprocess.run` with `capture_output=True, text=True, timeout=...`
+- All tool wrappers return `Optional[Dict]` — None means tool unavailable/failed
+- Use `from ...utils.logging import get_logger` for logging
+
+## Tool Wrapper Pattern
+```python
+def run_TOOLNAME(input_path: str, output_dir: Path, kingdom: str, **kwargs) -> Optional[Dict[str, Any]]:
+    exe = _find_toolname()
+    if not exe:
+        return None
+    cmd = [exe, ...]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=..., cwd=str(output_dir))
+        if result.returncode != 0:
+            logger.warning(f"TOOLNAME failed: {result.stderr[:200]}")
+            return None
+        return {"annotator": "toolname", "total_genes": N, ...}
+    except Exception as e:
+        logger.warning(f"TOOLNAME error: {e}")
+        return None
+```
+
+## Annotation Strategy
+- Animal: MITOS2 → Prokka → ORF finder
+- Plant: Run PMGA + MITOFY + BLAST+ simultaneously, then MERGE results (not fallback chain)
+  - Base = highest gene count result
+  - Supplement with genes found by other tools but missing from base
+  - Generate merged GFF with confidence scores
+- Last resort: ORF finder (getorf or pure Python) — assigns ORFs to genes by length heuristics
+- If no ORFs found: return failure, never fabricate positions
+
+## RAG System
+- Collections: tool_manuals, domain_knowledge, run_experience
+- Embedding: sentence-transformers (preferred) → BM25/Hash (fallback)
+- Retrieval: QueryRewriter → MultiRecallRetriever → RRF fusion → ReRanker → ContextAssembler
+- CLI: `mito-forge knowledge {index,stats,query,evaluate}`
+
+## Error Handling
+- Rule-based diagnosis first (match known error patterns from FAQ)
+- LLM diagnosis only for unknown errors
+- Auto-recovery: adjust_params → switch_tool → report_failure
+- Common fixes: SPAdes OOM → reduce threads/careful; Flye repeat → increase min-overlap; Pilon OOM → increase -Xmx
+
+## Testing
+- Run `python -c "from mito_forge.core.agents.annotation_agent import AnnotationAgent"` to verify imports
+- Run `mito-forge doctor` to check environment
+- Run `mito-forge knowledge stats` to check RAG status
